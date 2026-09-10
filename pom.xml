@@ -13,7 +13,7 @@
 
   <groupId>com.viskly</groupId>
   <artifactId>viskly</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <name>viskly</name>
   <description>Local dictation on the JVM</description>
 
