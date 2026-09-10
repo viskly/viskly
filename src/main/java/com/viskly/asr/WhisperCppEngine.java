@@ -155,10 +155,24 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
         if (!props.asr().trimAudioContext()) {
             return 0;
         }
-        int needed = (samples + 319) / 320 + props.asr().audioContextPadding();
-        int trimmed = Math.clamp(needed, 128, 1500);
+        int trimmed = trimmedAudioContext(samples, props.asr().audioContextPadding());
         log.debug("audioCtx {} instead of 1500 ({} samples)", trimmed, samples);
         return trimmed;
+    }
+
+    /**
+     * Rounded up to a multiple of 4, and that is not tidiness. The Metal backend of
+     * whisper.cpp 1.7.1 asserts that rows of a half-precision matrix start on an 8-byte
+     * boundary ({@code nb01 % 8 == 0}, ggml-metal.m line 1710), and an audio context above
+     * 256 that is not a multiple of 4 breaks it. The assert calls abort(): the process dies
+     * while transcribing, and nothing reaches the log. Measured on an M-series Mac with
+     * large-v3-turbo: 257, 1297, 1298 and 1299 abort, every multiple of 4 from 148 to 1500
+     * passes. Without the rounding three dictations in four longer than about three seconds
+     * killed the application.
+     */
+    static int trimmedAudioContext(int samples, int padding) {
+        int needed = (samples + 319) / 320 + padding;
+        return Math.clamp((needed + 3) & ~3, 128, 1500);
     }
 
     /**

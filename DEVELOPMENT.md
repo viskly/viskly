@@ -133,6 +133,14 @@ Every one of these was hit for real. They fail silently, which is why they are l
   quarantine attribute and was not moved by Finder is started from a random read-only
   path. Consents still match, but anything that expects /Applications does not; the
   drag-to-install layout of the disk image avoids it.
+- **whisper.cpp aborts the process on an audio context Metal cannot align.** Above 256,
+  an `audioCtx` that is not a multiple of 4 fails an assert in `ggml-metal.m` and
+  whisper.cpp calls `abort()`. In 0.1.0 that killed three dictations in four longer than
+  about three seconds. `WhisperCppEngine` rounds it up; keep it that way.
+- **A native crash leaves nothing in `viskly.log`.** The log simply stops, often right
+  after "recording". The reason is in `~/Library/Logs/DiagnosticReports/Viskly-*.ips`:
+  the faulting thread's frames, and for an assert the call site, which `otool -tv` on
+  the library shows next to the assert text.
 - **Java reads unicode escapes inside comments.** A backslash followed by `u` in a
   Javadoc is compiled as an escape and fails the build.
 
