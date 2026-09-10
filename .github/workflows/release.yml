@@ -1,0 +1,135 @@
+# Copyright (C) 2026 Karol Krawczyk
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Pushing a tag like v0.1.0 builds, signs, notarises and publishes both disk images, and
+# the latest.properties the application's "Check now" button reads. Nothing else triggers
+# it: a release is a decision, not a side effect of pushing to main.
+#
+# Repository secrets it needs:
+#
+#   DEVELOPER_ID_P12           the "Developer ID Application" certificate with its private
+#                              key, exported from Keychain Access as .p12, then base64
+#   DEVELOPER_ID_P12_PASSWORD  the password chosen at export
+#   NOTARY_API_KEY             App Store Connect API key (.p8), base64
+#   NOTARY_API_KEY_ID          its Key ID
+#   NOTARY_API_ISSUER          the Issuer ID shown above the list of keys
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          # jpackage bundles the runtime of the machine it runs on, so each architecture
+          # needs its own runner; there is no universal JDK to build one image from.
+          - runner: macos-15
+            arch: arm64
+            asset: Viskly-Apple-Silicon.dmg
+          - runner: macos-15-intel
+            arch: x86_64
+            asset: Viskly-Intel.dmg
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Check the tag against pom.xml
+        run: |
+          version="$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [[ "v${version}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME}, but pom.xml says ${version}."
+            exit 1
+          fi
+
+      - name: Test
+        run: mvn -B -q test
+
+      - name: Import the signing certificate
+        env:
+          CERTIFICATE: ${{ secrets.DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          # A keychain of its own, made the default, so codesign finds the identity and
+          # notarytool keeps its profile there without either touching the runner's.
+          keychain="${RUNNER_TEMP}/signing.keychain-db"
+          password="$(openssl rand -base64 24)"
+          security create-keychain -p "${password}" "${keychain}"
+          security set-keychain-settings -lut 21600 "${keychain}"
+          security unlock-keychain -p "${password}" "${keychain}"
+          echo "${CERTIFICATE}" | base64 --decode > "${RUNNER_TEMP}/certificate.p12"
+          security import "${RUNNER_TEMP}/certificate.p12" -k "${keychain}" \
+            -P "${CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+          rm "${RUNNER_TEMP}/certificate.p12"
+          # Without this codesign stops at a keychain access prompt no one can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "${password}" "${keychain}" >/dev/null
+          security list-keychains -d user -s "${keychain}"
+          security default-keychain -s "${keychain}"
+          echo "KEYCHAIN=${keychain}" >> "${GITHUB_ENV}"
+
+      - name: Store the notarisation credentials
+        env:
+          API_KEY: ${{ secrets.NOTARY_API_KEY }}
+          API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+        run: |
+          echo "${API_KEY}" | base64 --decode > "${RUNNER_TEMP}/notary.p8"
+          xcrun notarytool store-credentials viskly-notary --key "${RUNNER_TEMP}/notary.p8" \
+            --key-id "${API_KEY_ID}" --issuer "${API_ISSUER}" --keychain "${KEYCHAIN}"
+          rm "${RUNNER_TEMP}/notary.p8"
+
+      - name: Build, sign and notarise
+        env:
+          # A prefix is enough: the keychain holds exactly one identity.
+          VISKLY_SIGN_IDENTITY: Developer ID Application
+          VISKLY_NOTARY_PROFILE: viskly-notary
+        run: |
+          ./scripts/build-app.sh --dmg
+          # Fixed names, so a link to releases/latest/download/<name> never has to change.
+          mv target/dist/Viskly-*-${{ matrix.arch }}.dmg "target/dist/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: target/dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+      - name: Remove the keychain
+        if: always()
+        run: security delete-keychain "${KEYCHAIN:-/nonexistent}" 2>/dev/null || true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write latest.properties
+        run: |
+          printf 'version=%s\npage=https://github.com/%s/releases/tag/%s\n' \
+            "${GITHUB_REF_NAME#v}" "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" \
+            > dist/latest.properties
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" \
+            --title "Viskly ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag

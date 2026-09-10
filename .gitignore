@@ -1,0 +1,14 @@
+target/
+*.class
+
+# models live in ~/.viskly/models; this guards against a copy dropped here (~850 MB)
+models/
+*.bin
+
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# editor assistant configuration stays on the machine; the shared notes are DEVELOPMENT.md
+CLAUDE.md

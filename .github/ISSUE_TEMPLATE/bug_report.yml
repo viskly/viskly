@@ -1,0 +1,71 @@
+name: Bug report
+description: Something does not work the way the README says it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        macOS never tells an application that a permission is missing, so most reports are
+        only solvable with the log and the exact system. The fields below ask for exactly
+        that.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: From launching Viskly to the problem. Mention the shortcut you use.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Viskly version
+      description: At the bottom of the settings window's sidebar.
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: Apple menu > About This Mac.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mac
+    attributes:
+      label: Mac
+      options:
+        - Apple Silicon
+        - Intel
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: Permissions granted to Viskly
+      description: System Settings > Privacy & Security.
+      options:
+        - label: Microphone
+        - label: Input Monitoring
+        - label: Accessibility
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: >-
+        The end of ~/.viskly/viskly.log, from the last "Starting VisklyApplication" line
+        down. It holds no dictated text, only timings and errors.
+      render: text

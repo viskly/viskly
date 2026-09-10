@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.0</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.viskly</groupId>
+  <artifactId>viskly</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <name>viskly</name>
+  <description>Local dictation on the JVM</description>
+
+  <properties>
+    <java.version>25</java.version>
+    <whisper-jni.version>1.7.1</whisper-jni.version>
+    <sqlite.version>3.50.3.0</sqlite.version>
+  </properties>
+
+  <dependencies>
+    <!-- DI container and configuration, without the web layer -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+
+    <!-- whisper.cpp over JNI; macOS arm64/x64 and Windows x64 natives ship in the jar -->
+    <dependency>
+      <groupId>io.github.givimad</groupId>
+      <artifactId>whisper-jni</artifactId>
+      <version>${whisper-jni.version}</version>
+    </dependency>
+
+    <!-- history: one table, plain JDBC, no persistence framework -->
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+      <version>${sqlite.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <!--
+            FFM calls native system symbols (CGEventTap) and whisper-jni loads its own
+            library — without this flag JDK 25 prints warnings at startup.
+          -->
+          <!--
+            -Dapple.awt.UIElement=true: the clipboard needs AWT initialised, and on macOS
+            that puts the app in the Dock and takes over the menu bar by default. This flag
+            makes it a UI agent — it works, but stays out of the user's way.
+          -->
+          <jvmArguments>--enable-native-access=ALL-UNNAMED -Dapple.awt.UIElement=true</jvmArguments>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

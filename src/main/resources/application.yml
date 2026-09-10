@@ -1,0 +1,60 @@
+spring:
+  main:
+    # No Tomcat, no port — this is a background process, not a server.
+    web-application-type: none
+    banner-mode: off
+    # Note: spring.main.headless is deliberately absent — it is read too late to have
+    # any effect. VisklyApplication.main() sets java.awt.headless instead.
+
+logging:
+  # The packaged app has no console, so without this file every error is invisible.
+  # It is the first place worth looking.
+  file:
+    name: ${user.home}/.viskly/viskly.log
+  level:
+    root: WARN
+    com.viskly: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %-22logger{0} %msg%n"
+
+viskly:
+  # Fetch the model with scripts/get-model.sh
+  model-path: ${user.home}/.viskly/models/ggml-large-v3-turbo-q5_0.bin
+  # Recognition language, ISO-639-1. This one is content, not a leftover.
+  language: pl
+  # 0 = half the available cores; taking all of them does not pay off on Apple Silicon
+  threads: 0
+
+  hotkey:
+    # RIGHT_COMMAND | LEFT_COMMAND | RIGHT_OPTION | LEFT_OPTION | RIGHT_CONTROL | FN
+    # Hold the key and it records. Release it and it transcribes.
+    key: RIGHT_COMMAND
+
+  audio:
+    sample-rate: 16000
+    # Hard limit on a single dictation; the buffer is pre-allocated for this length
+    max-seconds: 60
+    # Below this threshold we do not call the model — Whisper hallucinates on silence
+    min-speech-millis: 300
+
+  inject:
+    # false = text only reaches the log, as it did before pasting existed
+    enabled: true
+    # Pause between writing the clipboard and sending Cmd+V
+    settle-millis: 40
+    # After this many ms the previous clipboard content is restored; too short and the
+    # target application pastes the restored content instead
+    restore-delay-millis: 200
+
+  ui:
+    # Distance of the pill from the top edge of the Dock. Increase it to sit higher.
+    indicator-bottom-margin: 40
+
+  asr:
+    # Trims the encoder input to the real length of the recording instead of a fixed 30 s.
+    # The gain is largest on short dictations — which is what most of them are.
+    trim-audio-context: true
+    # Padding, in frames. Trimming too tightly damages the end of an utterance.
+    audio-context-padding: 96
+    # true = whisper.cpp prints which backend it chose (Metal or CPU)
+    verbose-model-log: false
