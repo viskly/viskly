@@ -3,6 +3,12 @@
 
 package com.viskly;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 
 import org.springframework.boot.SpringApplication;
@@ -29,6 +35,7 @@ public class VisklyApplication {
         // macOS: without this, initialising AWT puts the app in the Dock and takes over
         // the menu bar. Set in code so it also holds for java -jar, not just the Maven plugin.
         System.setProperty("apple.awt.UIElement", "true");
+        privateDataDirectory();
 
         ConfigurableApplicationContext context = SpringApplication.run(VisklyApplication.class, args);
 
@@ -44,5 +51,26 @@ public class VisklyApplication {
         context.addApplicationListener(
                 (ApplicationListener<ContextClosedEvent>) event -> running.countDown());
         running.await();
+    }
+
+    /**
+     * ~/.viskly holds every dictation (history.db) and the log. Home directories on macOS
+     * are world-readable (755), and so was this one, so any other account on the Mac could
+     * read what the user had said. Owner-only on the directory covers every file in it,
+     * whatever mode SQLite or logback give the files themselves.
+     *
+     * <p>It has to run before {@code SpringApplication.run}: logback creates the directory
+     * for its file the moment logging starts, and with the default mode.
+     */
+    private static void privateDataDirectory() {
+        Path dir = Path.of(System.getProperty("user.home"), ".viskly");
+        Set<PosixFilePermission> ownerOnly = PosixFilePermissions.fromString("rwx------");
+        try {
+            Files.createDirectories(dir);
+            Files.setPosixFilePermissions(dir, ownerOnly);
+        } catch (IOException | UnsupportedOperationException e) {
+            // Logging is not up yet; this is the only channel there is.
+            System.err.println("Could not make " + dir + " private: " + e);
+        }
     }
 }

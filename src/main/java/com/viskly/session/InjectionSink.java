@@ -39,6 +39,12 @@ public class InjectionSink {
     @EventListener
     public void onTranscript(SessionEvents.TranscriptReady event) {
         if (!settings.injectEnabled()) {
+            // The setting promises "the text only reaches the clipboard". It used to reach
+            // nothing at all: this returned before anything was written.
+            if (injector.copy(event.text()) == TextInjector.Result.FAILED) {
+                events.publishEvent(
+                        new SessionEvents.TextNotPasted("Could not even reach the clipboard"));
+            }
             return;
         }
         switch (injector.insert(event.text())) {

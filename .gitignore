@@ -1,4 +1,6 @@
 target/
+# build-natives.sh: whisper.cpp sources and the libraries built from them
+build/
 *.class
 
 # models live in ~/.viskly/models; this guards against a copy dropped here (~850 MB)

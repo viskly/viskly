@@ -3,22 +3,24 @@
 <!--
   Hardened runtime exceptions for Viskly.app, applied by build-app.sh.
 
-  The set jpackage uses for its own signing, minus two it adds that this application does
-  not need: debugger (attaching to other processes) and allow-dyld-environment-variables.
-
   allow-jit, allow-unsigned-executable-memory: the JVM compiles to native code at runtime.
-  disable-library-validation: whisper-jni and sqlite-jdbc copy their libraries out of the
-    jar into a temporary directory and load them from there.
   device.audio-input: under the hardened runtime the microphone is refused without it, and
     macOS does not even ask the user.
+
+  Deliberately absent: disable-library-validation, which jpackage's own set includes. With
+  it, the process loads libraries signed by anyone, and an application holding Input
+  Monitoring and Accessibility becomes a way for other code to borrow those consents. A
+  Developer ID build does not need it: every library it loads, the whisper and SQLite
+  natives included, is signed by the same team. build-app.sh adds it back for ad-hoc
+  builds only, which have no team and could not otherwise load their own runtime.
+
+  Also absent from jpackage's set: debugger and allow-dyld-environment-variables.
 -->
 <plist version="1.0">
 <dict>
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
     <key>com.apple.security.device.audio-input</key>
     <true/>

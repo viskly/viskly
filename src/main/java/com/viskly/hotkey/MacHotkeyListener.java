@@ -346,12 +346,14 @@ public final class MacHotkeyListener implements HotkeyListener {
     @SuppressWarnings("unused")
     private MemorySegment onEvent(MemorySegment proxy, int type, MemorySegment event, MemorySegment userInfo) {
         try {
+            // Once close() has started nothing is handled. Our own cgEventTapEnable(false)
+            // fires a disabled event that would switch the tap back on mid-shutdown, and
+            // any other event would reach a dispatcher that has already been shut down and
+            // log a RejectedExecutionException for every key pressed until the loop stops.
+            if (closing) {
+                return event;
+            }
             if (type == TAP_DISABLED_BY_TIMEOUT || type == TAP_DISABLED_BY_USER_INPUT) {
-                // Our own cgEventTapEnable(false) in close() fires this event too — without
-                // the flag we would switch the tap back on in the middle of shutting down.
-                if (closing) {
-                    return event;
-                }
                 log.warn("The system disabled the event tap (type {}), enabling it again", type);
                 cgEventTapEnable.invokeExact(tap, true);
                 return event;

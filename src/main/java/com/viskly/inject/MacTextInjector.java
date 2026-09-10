@@ -63,6 +63,8 @@ public final class MacTextInjector implements TextInjector {
     private final MethodHandle release;
     private final MethodHandle isProcessTrusted;
 
+    /** Null if AppKit could not be reached, in which case AWT carries the text alone. */
+    private final MacPasteboard pasteboard = openPasteboard();
     private final int settleMillis;
     /** Read on every paste: the settings window changes it while the application runs. */
     private final IntSupplier restoreDelayMillis;
@@ -94,26 +96,25 @@ public final class MacTextInjector implements TextInjector {
 
     @Override
     public Result insert(String text) {
-        Clipboard clipboard;
-        try {
-            clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
-        } catch (RuntimeException | Error e) {
-            log.error("No clipboard access — is the application starting in headless mode?", e);
+        Clipboard clipboard = systemClipboard();
+        if (clipboard == null) {
             return Result.FAILED;
         }
 
         String previous = readText(clipboard);
-        if (!write(clipboard, new StringSelection(text))) {
+        if (!put(clipboard, text)) {
             return Result.FAILED;
         }
 
+        // On both CLIPBOARD_ONLY paths below the previous content is deliberately not put
+        // back. The user has just been told to paste the text themselves, and restoring
+        // the old clipboard 200 ms later made that Cmd+V paste something else entirely.
         if (!trusted()) {
             log.warn("""
                     The text is in the clipboard, but I cannot paste it: no Accessibility
-                    consent. Settings > Privacy & Security > Accessibility — tick the
+                    consent. Settings > Privacy & Security > Accessibility: tick the
                     application you launch the JVM from, quit it with Cmd+Q and start it
                     again. For now, paste it yourself (Cmd+V).""");
-            restoreLater(clipboard, previous);
             return Result.CLIPBOARD_ONLY;
         }
 
@@ -124,13 +125,33 @@ public final class MacTextInjector implements TextInjector {
         try {
             pressCommandV();
         } catch (Throwable t) {
-            log.error("CGEventPost failed — the text stays in the clipboard", t);
-            restoreLater(clipboard, previous);
+            log.error("CGEventPost failed, the text stays in the clipboard", t);
             return Result.CLIPBOARD_ONLY;
         }
 
         restoreLater(clipboard, previous);
         return Result.PASTED;
+    }
+
+    @Override
+    public Result copy(String text) {
+        Clipboard clipboard = systemClipboard();
+        return clipboard != null && put(clipboard, text) ? Result.CLIPBOARD_ONLY : Result.FAILED;
+    }
+
+    private Clipboard systemClipboard() {
+        try {
+            return Toolkit.getDefaultToolkit().getSystemClipboard();
+        } catch (RuntimeException | Error e) {
+            log.error("No clipboard access; is the application starting in headless mode?", e);
+            return null;
+        }
+    }
+
+    /** Through NSPasteboard as transient content (see MacPasteboard), AWT only as a fallback. */
+    private boolean put(Clipboard clipboard, String text) {
+        return (pasteboard != null && pasteboard.writeTransient(text))
+                || write(clipboard, new StringSelection(text));
     }
 
     private void pressCommandV() throws Throwable {
@@ -201,6 +222,15 @@ public final class MacTextInjector implements TextInjector {
             sleep(restoreDelayMillis.getAsInt());
             write(clipboard, new StringSelection(previous));
         });
+    }
+
+    private static MacPasteboard openPasteboard() {
+        try {
+            return new MacPasteboard();
+        } catch (RuntimeException | LinkageError e) {
+            log.warn("NSPasteboard unavailable, transcripts go through AWT's clipboard", e);
+            return null;
+        }
     }
 
     private static void sleep(int millis) {

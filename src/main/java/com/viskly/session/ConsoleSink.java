@@ -9,9 +9,13 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /**
- * A view of what is happening: timings and the recognised text. Inserting into the
+ * A view of what is happening: timings, never the recognised text. Inserting into the
  * frontmost window is {@code InjectionSink}'s job, listening to the same event —
  * adding it took not one line of change in the session.
+ *
+ * <p>The transcript used to be printed to standard output as well, which put everything
+ * the user said into any terminal the application was started from, and into whatever
+ * captured that output.
  */
 @Component
 public class ConsoleSink {
@@ -28,7 +32,6 @@ public class ConsoleSink {
         log.info("✓ {} ms audio, {} ms model ({}x realtime)",
                 event.audioMillis(), event.asrMillis(),
                 String.format("%.1f", event.realtimeFactor()));
-        System.out.println("  " + event.text());
     }
 
     @EventListener

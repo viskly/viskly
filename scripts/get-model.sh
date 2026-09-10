@@ -15,8 +15,18 @@ set -euo pipefail
 MODEL="${1:-large-v3-turbo-q5_0}"
 DIR="${HOME}/.viskly/models"
 FILE="${DIR}/ggml-${MODEL}.bin"
-URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${MODEL}.bin"
 ATTEMPTS=6
+
+# The model with a known checksum comes from the commit that checksum belongs to, the same
+# one the application uses, so a later upload under the same name cannot break it. Other
+# models come from main and are only checked for the ggml header.
+revision_for() {
+  case "$1" in
+    large-v3-turbo-q5_0) echo "98aa99a0a9db05ae2342309f5096248665f7cba3" ;;
+    *) echo "main" ;;
+  esac
+}
+URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/$(revision_for "${MODEL}")/ggml-${MODEL}.bin"
 
 # Checksums from HuggingFace. For models not listed here we only check the ggml header
 # and that the file is not suspiciously small.

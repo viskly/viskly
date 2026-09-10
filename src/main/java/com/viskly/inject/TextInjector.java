@@ -20,6 +20,14 @@ public interface TextInjector {
     Result insert(String text);
 
     /**
+     * Puts the text on the clipboard without pasting it, for when the user has switched
+     * pasting off.
+     *
+     * @return {@link Result#CLIPBOARD_ONLY}, or {@link Result#FAILED}
+     */
+    Result copy(String text);
+
+    /**
      * Whether pasting would work right now. On macOS this reports the Accessibility
      * consent, which {@code CGEventPost} needs and never complains about.
      */

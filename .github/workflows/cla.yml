@@ -31,7 +31,10 @@ jobs:
           github.event_name == 'pull_request_target'
           || github.event.comment.body == 'recheck'
           || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'
-        uses: contributor-assistant/github-action@v2.6.1
+        # Pinned to the commit of v2.6.1. The project is archived: it gets no fixes, and it
+        # runs with write access, so a moved tag must not be able to change what runs here.
+        # To be replaced by a maintained equivalent.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

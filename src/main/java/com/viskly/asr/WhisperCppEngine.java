@@ -37,8 +37,11 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
     private final VisklyProperties props;
     private final Object lock = new Object();
 
-    private WhisperJNI whisper;
-    private WhisperContext context;
+    // Volatile: set on the thread that loads the model (startup, or a virtual thread after
+    // the download) and read by isReady() on the hotkey thread. Without it that thread was
+    // not guaranteed to see a model loaded after startup.
+    private volatile WhisperJNI whisper;
+    private volatile WhisperContext context;
 
     public WhisperCppEngine(VisklyProperties props) {
         this.props = props;
@@ -71,7 +74,9 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
         }
         try {
             loadModel();
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
+            // LinkageError: a native library that will not load throws UnsatisfiedLinkError,
+            // an Error, which used to escape here and abort the whole startup.
             log.error("Could not load the model from {}", props.modelPath(), e);
         }
     }
@@ -94,7 +99,7 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
 
     @Override
     public String transcribe(float[] samples, String language) {
-        if (samples.length == 0 || context == null) {
+        if (samples.length == 0 || !isReady()) {
             return "";
         }
         WhisperFullParams params = new WhisperFullParams(WhisperSamplingStrategy.GREEDY);
@@ -113,6 +118,10 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
         params.audioCtx = audioContextFor(samples.length);
 
         synchronized (lock) {
+            WhisperContext context = this.context;
+            if (context == null) {
+                return ""; // closed by destroy() while this call waited for the lock
+            }
             int result = whisper.full(context, params, samples, samples.length);
             if (result != 0) {
                 log.warn("whisper.full returned {}", result);
@@ -152,10 +161,18 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
         return trimmed;
     }
 
+    /**
+     * Under the same lock as transcription: quitting while whisper.full() runs used to free
+     * the context out from under the native call.
+     */
     @Override
     public void destroy() throws IOException {
-        if (context != null) {
-            context.close();
+        synchronized (lock) {
+            WhisperContext closing = context;
+            context = null;
+            if (closing != null) {
+                closing.close();
+            }
         }
     }
 }

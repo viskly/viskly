@@ -16,6 +16,12 @@
 #   VISKLY_NOTARY_PROFILE  a notarytool keychain profile (xcrun notarytool
 #                          store-credentials). Set, the disk image is notarised and stapled,
 #                          which is what lets Gatekeeper open it on other Macs.
+#   VISKLY_WHISPER_NATIVES a directory from build-natives.sh. Set, the whisper libraries
+#                          built there replace the prebuilt ones from the whisper-jni jar,
+#                          which are then dropped rather than signed. Releases set it.
+#   VISKLY_JDK             the JDK 25 home to build with, when java_home would pick another.
+#                          Anything meant for other Macs needs one whose libraries link
+#                          nothing outside itself, such as Temurin; Homebrew's does not.
 #
 # IMPORTANT about permissions: macOS ties the Accessibility and Input Monitoring consents
 # to the signature. Ad-hoc, that is the hash of this exact build, so EVERY rebuild looks
@@ -50,6 +56,10 @@ fi
 
 IDENTITY="${VISKLY_SIGN_IDENTITY:--}"
 NOTARY_PROFILE="${VISKLY_NOTARY_PROFILE:-}"
+OWN_WHISPER="${VISKLY_WHISPER_NATIVES:-}"
+if [[ -n "${OWN_WHISPER}" ]]; then
+  OWN_WHISPER="$(cd "${OWN_WHISPER}" && pwd)" || { echo "No directory ${VISKLY_WHISPER_NATIVES}"; exit 1; }
+fi
 # Both checked before the build rather than after it: finding out at the signing step
 # costs a full jpackage run, and on a CI runner a few minutes of macOS time.
 if [[ "${IDENTITY}" != "-" ]] && ! security find-identity -v -p codesigning | grep -qF "${IDENTITY}"; then
@@ -68,11 +78,19 @@ fi
 # necessarily the one JAVA_HOME points at. When they disagree the build succeeds and the
 # application then dies on first launch with UnsupportedClassVersionError, because the
 # classes were compiled by one JDK and the bundled runtime is another.
-JDK="$(/usr/libexec/java_home -v 25 2>/dev/null || true)"
+is_jdk25() {
+  [[ -x "$1/bin/java" ]] && "$1/bin/java" -version 2>&1 | head -1 | grep -qE '"25(\.|")'
+}
+JDK=""
+if [[ -n "${VISKLY_JDK:-}" ]]; then
+  is_jdk25 "${VISKLY_JDK}" || { echo "VISKLY_JDK=${VISKLY_JDK} is not a JDK 25."; exit 1; }
+  JDK="${VISKLY_JDK}"
+else
+  JDK="$(/usr/libexec/java_home -v 25 2>/dev/null || true)"
+fi
 # A CI runner's setup-java installs into its tool cache, where java_home does not look.
 # JAVA_HOME is taken then, but only once it has proved to be a 25.
-if [[ -z "${JDK}" && -n "${JAVA_HOME:-}" ]] \
-   && "${JAVA_HOME}/bin/java" -version 2>&1 | head -1 | grep -qE '"25(\.|")'; then
+if [[ -z "${JDK}" && -n "${JAVA_HOME:-}" ]] && is_jdk25 "${JAVA_HOME}"; then
   JDK="${JAVA_HOME}"
 fi
 if [[ -z "${JDK}" ]]; then
@@ -87,6 +105,24 @@ JPACKAGE="${JDK}/bin/jpackage"
 [[ -x "${JPACKAGE}" ]] || { echo "No jpackage in ${JDK}/bin"; exit 1; }
 echo "==> JDK: $("${JAVA}" -version 2>&1 | head -1)"
 echo "    signing as: ${IDENTITY/#-/ad-hoc}"
+
+# jpackage bundles this JDK's own runtime, so the natives shipped beside it have to be the
+# ones for the same architecture. The names are those the two libraries use in their jars.
+case "$(sed -nE 's/^OS_ARCH="([^"]+)"$/\1/p' "${JDK}/release")" in
+  aarch64) WHISPER_NATIVES="macos-arm64"; SQLITE_NATIVES="Mac/aarch64"; JDK_ARCH="arm64" ;;
+  x86_64) WHISPER_NATIVES="macos-amd64"; SQLITE_NATIVES="Mac/x86_64"; JDK_ARCH="x86_64" ;;
+  *) echo "Unknown architecture in ${JDK}/release"; exit 1 ;;
+esac
+if [[ -n "${OWN_WHISPER}" ]]; then
+  for lib in libwhisper-jni.dylib libwhisper.1.dylib libggml.dylib; do
+    [[ -f "${OWN_WHISPER}/${lib}" ]] || { echo "No ${lib} in ${OWN_WHISPER}"; exit 1; }
+    if ! lipo -archs "${OWN_WHISPER}/${lib}" | grep -qw "${JDK_ARCH}"; then
+      echo "${OWN_WHISPER}/${lib} is not built for ${JDK_ARCH}, the JDK's architecture."
+      exit 1
+    fi
+  done
+  echo "    whisper natives: own build, ${OWN_WHISPER#"${ROOT}"/}"
+fi
 
 # Hardened runtime on every build, ad-hoc ones included. Notarisation requires it, and a
 # JVM under it needs the exceptions in entitlements.plist; a missing one (the microphone,
@@ -151,7 +187,7 @@ echo "==> Signing the native libraries inside the jar"
 # rejects any binary in them without a Developer ID signature, so they are taken out,
 # signed and put back before jpackage seals the bundle.
 NATIVES="${ROOT}/target/jar-natives"
-rm -rf "${NATIVES}"; mkdir -p "${NATIVES}"
+rm -rf "${NATIVES}"; mkdir -p "${NATIVES}" "${STAGE}/natives"
 while IFS= read -r nested; do
   unzip -q -o "${FAT}" "${nested}" -d "${NATIVES}"
   libs=()
@@ -159,6 +195,18 @@ while IFS= read -r nested; do
     libs+=("${lib}")
   done < <(unzip -Z1 "${NATIVES}/${nested}" | grep -E '\.(dylib|jnilib)$' || true)
   [[ ${#libs[@]} -gt 0 ]] || continue
+
+  if [[ -n "${OWN_WHISPER}" && "${nested}" == */whisper-jni-*.jar ]]; then
+    # Replaced by the libraries build-natives.sh made from pinned source. The prebuilt
+    # ones are removed rather than signed: nothing we did not build carries our signature.
+    zip -q -d "${NATIVES}/${nested}" "${libs[@]}"
+    (cd "${NATIVES}" && zip -q -0 "${FAT}" "${nested}")
+    for lib in libwhisper-jni.dylib libwhisper.1.dylib libggml.dylib; do
+      cp "${OWN_WHISPER}/${lib}" "${STAGE}/natives/"
+    done
+    echo "    ${nested##*/}: ${#libs[@]} prebuilt libraries dropped, own build from ${OWN_WHISPER#"${ROOT}"/}"
+    continue
+  fi
 
   mkdir -p "${NATIVES}/unpacked"
   (cd "${NATIVES}/unpacked" && unzip -q -o "${NATIVES}/${nested}" "${libs[@]}")
@@ -168,18 +216,40 @@ while IFS= read -r nested; do
   (cd "${NATIVES}/unpacked" && zip -q "${NATIVES}/${nested}" "${libs[@]}")
   # -0: Spring Boot reads nested jars in place and refuses one that is compressed.
   (cd "${NATIVES}" && zip -q -0 "${FAT}" "${nested}")
+  # The copies the application actually loads: sealed inside the bundle rather than
+  # extracted to a temporary directory at every start, where another process of the same
+  # user could swap them before they are loaded. See the java-options further down.
+  for lib in "${libs[@]}"; do
+    case "${lib}" in
+      "${WHISPER_NATIVES}"/*|org/sqlite/native/"${SQLITE_NATIVES}"/*)
+        cp "${NATIVES}/unpacked/${lib}" "${STAGE}/natives/" ;;
+    esac
+  done
   rm -rf "${NATIVES}/unpacked"
   echo "    ${nested##*/}: ${#libs[@]} libraries"
 done < <(unzip -Z1 "${FAT}" 'BOOT-INF/lib/*.jar')
 rm -rf "${NATIVES}"
+for lib in libwhisper-jni.dylib libwhisper.1.dylib libggml.dylib libsqlitejdbc.dylib; do
+  [[ -f "${STAGE}/natives/${lib}" ]] || { echo "No ${lib} for ${WHISPER_NATIVES} in the jars."; exit 1; }
+done
 
 echo "==> Assembling the app image"
 # Every JDK module rather than a computed set. Spring reaches for reflection in places
 # jdeps cannot see, so trimming here ends in a ClassNotFoundException on the user's
 # machine, not on yours. Slimming down is a job for later, once there is something to
-# measure what is actually used.
-MODULES="$("${JAVA}" --list-modules | cut -d'@' -f1 | paste -sd, -)"
+# measure what is actually used. The two exceptions are tools, not runtime: a JDK without
+# packaged modules (Temurin 25 is one) refuses to put jdk.jlink into another image, and
+# jdk.jpackage depends on it.
+MODULES="$("${JAVA}" --list-modules | cut -d'@' -f1 | grep -vE '^jdk\.(jlink|jpackage)$' | paste -sd, -)"
 
+# The JVM options, since a comment cannot sit inside the command below:
+#   whisperjni.libdir, org.sqlite.lib.*: load the natives from the bundle (see above).
+#   DisableAttachMechanism, -EnableDynamicAgentLoading: a process of the same user could
+#     otherwise attach to this JVM and run code with its Input Monitoring, Accessibility
+#     and microphone consents. It also means jcmd and jstack cannot reach a packaged build;
+#     debug with mvn spring-boot:run.
+# $APPDIR stays literal here: the launcher expands it to Contents/app at every start.
+# shellcheck disable=SC2016
 "${JPACKAGE}" \
   --type app-image \
   --name "${APP}" \
@@ -191,7 +261,12 @@ MODULES="$("${JAVA}" --list-modules | cut -d'@' -f1 | paste -sd, -)"
   --add-modules "${MODULES}" \
   --java-options "--enable-native-access=ALL-UNNAMED" \
   --java-options "-Dapple.awt.UIElement=true" \
-  --java-options "-Xss4m"
+  --java-options "-Xss4m" \
+  --java-options '-Dio.github.givimad.whisperjni.libdir=$APPDIR/natives' \
+  --java-options '-Dorg.sqlite.lib.path=$APPDIR/natives' \
+  --java-options "-Dorg.sqlite.lib.name=libsqlitejdbc.dylib" \
+  --java-options "-XX:+DisableAttachMechanism" \
+  --java-options "-XX:-EnableDynamicAgentLoading"
 
 BUNDLE="${DIST}/${APP}.app"
 PLIST="${BUNDLE}/Contents/Info.plist"
@@ -199,6 +274,35 @@ RUNTIME="${BUNDLE}/Contents/runtime"
 # What the bundled runtime runs on, taken from the JVM itself rather than from uname: the
 # disk image name has to match the binaries inside, whatever machine built them.
 ARCH="$(lipo -archs "${RUNTIME}/Contents/Home/lib/server/libjvm.dylib")"
+
+echo "==> Checking what the bundle links against"
+# Homebrew's openjdk links its font, image and colour code to /opt/homebrew. A bundle made
+# from it starts on this Mac and on no Mac without those packages, and nothing says so:
+# only switching library validation on revealed it. So every binary is checked here.
+external=""
+while IFS= read -r -d '' binary; do
+  [[ -n "$(macho_kind "${binary}")" ]] || continue
+  own_id="$(otool -D "${binary}" | tail -n +2)"
+  while IFS= read -r dep; do
+    [[ "${dep}" == "${own_id}" ]] && continue
+    external+="    ${binary#"${BUNDLE}"/} -> ${dep}"$'\n'
+  done < <(otool -L "${binary}" | tail -n +2 | awk '{print $1}' \
+             | grep -vE '^(/usr/lib/|/System/|@rpath/|@loader_path/|@executable_path/)' || true)
+done < <(find "${BUNDLE}" -type f -print0)
+if [[ -n "${external}" ]]; then
+  printf '%s' "${external}"
+  if [[ "${IDENTITY}" != "-" || "${DMG}" == true ]]; then
+    echo "The bundle links against libraries outside itself and macOS, so it would not start"
+    echo "on a Mac without them. Build with a self-contained JDK: VISKLY_JDK=<Temurin 25 home>."
+    exit 1
+  fi
+  echo "    Runs on this Mac only. Anything for another Mac needs a self-contained JDK."
+else
+  echo "    nothing outside the bundle and macOS"
+fi
+
+# Licence texts of what the bundle carries, beside the code they cover.
+cp "${ROOT}/THIRD-PARTY-NOTICES.md" "${BUNDLE}/Contents/Resources/"
 
 echo "==> Filling in Info.plist"
 # The keys are added afterwards rather than through --resource-dir with our own template:
@@ -220,6 +324,17 @@ plist_set CFBundleIdentifier string "${BUNDLE_ID}"
 # The version a user sees, unconstrained by the leading-zero rule above.
 plist_set CFBundleShortVersionString string "${PROJECT_VERSION}"
 
+# Released builds run under library validation: only code signed by the same team loads.
+# An ad-hoc signature has no team, so a local ad-hoc build has to switch it off or not even
+# its own runtime would load. Only that build gets the exception, never a signed one.
+if [[ "${IDENTITY}" == "-" ]]; then
+  ADHOC_ENTITLEMENTS="${ROOT}/target/entitlements-adhoc.plist"
+  cp "${ENTITLEMENTS}" "${ADHOC_ENTITLEMENTS}"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" \
+    "${ADHOC_ENTITLEMENTS}"
+  ENTITLEMENTS="${ADHOC_ENTITLEMENTS}"
+fi
+
 echo "==> Signing the bundle"
 # Inside out, each piece on its own: every binary in the runtime, then the runtime as a
 # bundle, then the application. codesign --deep would be shorter, but it signs nested code
@@ -235,10 +350,10 @@ while IFS= read -r -d '' binary; do
     *) sign "${binary}" ;;
   esac
   count=$((count + 1))
-done < <(find "${RUNTIME}" -type f -print0)
+done < <(find "${RUNTIME}" "${BUNDLE}/Contents/app" -type f -print0)
 sign "${RUNTIME}"
 sign --entitlements "${ENTITLEMENTS}" "${BUNDLE}"
-echo "    ${count} runtime binaries, the runtime and the application (${ARCH})"
+echo "    ${count} binaries in the runtime and natives/, the runtime and the application (${ARCH})"
 
 codesign --verify --strict --verbose=1 "${BUNDLE}" 2>&1 | sed 's/^/    /'
 

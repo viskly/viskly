@@ -18,6 +18,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
@@ -32,8 +33,9 @@ import com.viskly.settings.Settings;
  * into an application whose whole point is being ready before the user finishes pressing
  * a key.
  *
- * <p>Writes happen on the event thread but off the dictation path — the text is already in
- * the user's window by the time this runs, so a slow disk delays nothing they can see.
+ * <p>Writes happen on the transcription thread, after the listener that pastes: the text is
+ * already in the user's window by the time this runs, so a slow disk delays nothing they
+ * can see.
  */
 @Component
 public class HistoryStore implements DisposableBean {
@@ -44,9 +46,16 @@ public class HistoryStore implements DisposableBean {
     private final Path file;
     private Connection connection;
 
+    // Marked because of the second constructor, which tests use: with two and no marker,
+    // Spring looks for a no-argument one and fails the whole startup without it.
+    @Autowired
     public HistoryStore(Settings settings) {
+        this(settings, Path.of(System.getProperty("user.home"), ".viskly", "history.db"));
+    }
+
+    HistoryStore(Settings settings, Path file) {
         this.settings = settings;
-        this.file = Path.of(System.getProperty("user.home"), ".viskly", "history.db");
+        this.file = file;
         open();
     }
 
@@ -55,6 +64,10 @@ public class HistoryStore implements DisposableBean {
             Files.createDirectories(file.getParent());
             connection = DriverManager.getConnection("jdbc:sqlite:" + file);
             try (Statement s = connection.createStatement()) {
+                // SQLite only marks deleted rows as free space, so "Delete everything" left
+                // every dictation readable in the file's bytes. With this, freed pages are
+                // overwritten with zeros; clear() also vacuums the file.
+                s.execute("PRAGMA secure_delete = ON");
                 s.executeUpdate("""
                         CREATE TABLE IF NOT EXISTS dictation (
                           id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +133,9 @@ public class HistoryStore implements DisposableBean {
         }
         try (Statement s = connection.createStatement()) {
             s.executeUpdate("DELETE FROM dictation");
+            // Rebuilds the file without the freed pages, and drops rows deleted before
+            // secure_delete was switched on, in files created by earlier versions.
+            s.execute("VACUUM");
             log.info("History cleared");
         } catch (SQLException e) {
             log.warn("Could not clear the history", e);

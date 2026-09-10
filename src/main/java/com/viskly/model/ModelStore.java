@@ -16,6 +16,8 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import org.slf4j.Logger;
@@ -41,12 +43,20 @@ public class ModelStore {
 
     private static final Logger log = LoggerFactory.getLogger(ModelStore.class);
 
-    private static final String URL =
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
+    /**
+     * Pinned to the commit that holds the file with {@link #SHA256}, not to main. A new
+     * upload under the same name on main would otherwise fail the checksum on every fresh
+     * install, with nothing the user could do about it.
+     */
+    private static final String URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/"
+            + "98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-large-v3-turbo-q5_0.bin";
     private static final String SHA256 =
             "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
+    private static final long EXPECTED_BYTES = 574_041_195L;
     /** Anything smaller than this cannot be a model, whatever the server said. */
     private static final long MIN_BYTES = 10_000_000L;
+    /** No byte for this long means the connection is dead, even if the socket says not. */
+    private static final Duration STALL = Duration.ofSeconds(60);
 
     private final Path target;
     private volatile boolean cancelled;
@@ -79,55 +89,105 @@ public class ModelStore {
         cancelled = false;
         Path part = target.resolveSibling(target.getFileName() + ".part");
 
-        try {
+        // HTTP/1.1 on purpose: an HTTP/2 stream through a middlebox that does not close it
+        // cleanly shows up as a reset at the very end of the transfer, which is exactly the
+        // failure this download kept hitting.
+        try (HttpClient client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .connectTimeout(Duration.ofSeconds(30))
+                .build()) {
             Files.createDirectories(target.getParent());
-            long have = Files.exists(part) ? Files.size(part) : 0;
-
-            HttpClient client = HttpClient.newBuilder()
-                    // HTTP/1.1 on purpose: an HTTP/2 stream through a middlebox that does
-                    // not close it cleanly shows up as a reset at the very end of the
-                    // transfer, which is exactly the failure this download kept hitting.
-                    .version(HttpClient.Version.HTTP_1_1)
-                    .followRedirects(HttpClient.Redirect.NORMAL)
-                    .connectTimeout(Duration.ofSeconds(30))
-                    .build();
-
-            HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(URL)).GET();
-            if (have > 0) {
-                request.header("Range", "bytes=" + have + "-");
-                log.info("Resuming the model download from {} MB", have / 1024 / 1024);
-            } else {
-                log.info("Downloading the model from {}", URL);
+            for (int attempt = 1; attempt <= 2; attempt++) {
+                if (fetch(client, part, progress) != Fetch.RANGE_REJECTED) {
+                    return;
+                }
+                // 416: the server has nothing past what .part already holds, so the file
+                // is complete but wrong, or longer than the model. Resuming can never
+                // fix either; one fresh start can.
+                log.warn("The server refused to resume from {} bytes, starting over", Files.size(part));
+                Files.deleteIfExists(part);
             }
+            progress.accept(new ModelDownload(0, 0, ModelDownload.State.FAILED,
+                    "The server would not send the file. Try again later."));
+        } catch (Exception e) {
+            log.error("Model download failed", e);
+            progress.accept(new ModelDownload(0, 0, ModelDownload.State.FAILED,
+                    e.getClass().getSimpleName() + ": " + e.getMessage()));
+        }
+    }
 
-            HttpResponse<InputStream> response =
-                    client.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
+    private enum Fetch { FINISHED, RANGE_REJECTED }
 
-            boolean resumed = response.statusCode() == 206;
-            if (response.statusCode() != 200 && !resumed) {
-                progress.accept(new ModelDownload(0, 0, ModelDownload.State.FAILED,
-                        "Server answered " + response.statusCode()));
-                return;
-            }
-            if (!resumed) {
-                have = 0; // server ignored the Range header, start over
-            }
+    private Fetch fetch(HttpClient client, Path part, Consumer<ModelDownload> progress)
+            throws IOException, InterruptedException {
+        long have = Files.exists(part) ? Files.size(part) : 0;
 
-            long total = response.headers().firstValueAsLong("content-length").orElse(-1) + have;
+        // The timeout covers everything up to the response headers; the body is watched
+        // separately, below.
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(URL))
+                .timeout(Duration.ofSeconds(60)).GET();
+        if (have > 0) {
+            request.header("Range", "bytes=" + have + "-");
+            log.info("Resuming the model download from {} MB", have / 1024 / 1024);
+        } else {
+            log.info("Downloading the model from {}", URL);
+        }
 
-            try (InputStream in = response.body();
-                 var out = Files.newOutputStream(part,
-                         resumed ? StandardOpenOption.APPEND : StandardOpenOption.CREATE,
-                         resumed ? StandardOpenOption.WRITE : StandardOpenOption.TRUNCATE_EXISTING)) {
+        HttpResponse<InputStream> response =
+                client.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
+
+        if (response.statusCode() == 416) {
+            response.body().close();
+            return Fetch.RANGE_REJECTED;
+        }
+        boolean resumed = response.statusCode() == 206;
+        if (response.statusCode() != 200 && !resumed) {
+            response.body().close();
+            progress.accept(new ModelDownload(0, 0, ModelDownload.State.FAILED,
+                    "Server answered " + response.statusCode()));
+            return Fetch.FINISHED;
+        }
+        if (!resumed) {
+            have = 0; // server ignored the Range header, start over
+        }
+
+        long total = response.headers().firstValueAsLong("content-length").orElse(-1) + have;
+        AtomicLong lastByte = new AtomicLong(System.nanoTime());
+        AtomicBoolean stalled = new AtomicBoolean();
+
+        try (InputStream in = response.body();
+             var out = Files.newOutputStream(part,
+                     resumed ? StandardOpenOption.APPEND : StandardOpenOption.CREATE,
+                     resumed ? StandardOpenOption.WRITE : StandardOpenOption.TRUNCATE_EXISTING)) {
+            // A read on a connection that went quiet without closing blocks forever, and
+            // the window would sit on the same percentage with no way out. Closing the
+            // stream from here is what makes that read return.
+            Thread watchdog = Thread.ofVirtual().name("viskly-model-watchdog").start(() -> {
+                try {
+                    while (true) {
+                        Thread.sleep(5_000);
+                        if (System.nanoTime() - lastByte.get() > STALL.toNanos()) {
+                            stalled.set(true);
+                            in.close();
+                            return;
+                        }
+                    }
+                } catch (InterruptedException | IOException e) {
+                    // interrupted: the transfer ended on its own
+                }
+            });
+            try {
                 byte[] buffer = new byte[1 << 16];
                 long received = have;
                 long lastReport = 0;
                 int read;
                 while ((read = in.read(buffer)) > 0) {
+                    lastByte.set(System.nanoTime());
                     if (cancelled) {
                         progress.accept(new ModelDownload(received, total,
                                 ModelDownload.State.IDLE, "Cancelled"));
-                        return;
+                        return Fetch.FINISHED;
                     }
                     out.write(buffer, 0, read);
                     received += read;
@@ -139,31 +199,41 @@ public class ModelStore {
                                 ModelDownload.State.RUNNING, ""));
                     }
                 }
-            } catch (IOException e) {
-                // The bytes on disk may still be complete; the checksum decides, not this.
-                log.warn("The transfer ended with an error, checking what is on disk anyway", e);
+            } finally {
+                watchdog.interrupt();
             }
-
-            progress.accept(new ModelDownload(Files.size(part), total,
-                    ModelDownload.State.VERIFYING, "Checking the file"));
-
-            if (!verify(part)) {
-                progress.accept(new ModelDownload(Files.size(part), total,
-                        ModelDownload.State.FAILED,
-                        "The file is incomplete. Starting again resumes where it stopped."));
-                return;
-            }
-
-            Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
-            progress.accept(new ModelDownload(Files.size(target), Files.size(target),
-                    ModelDownload.State.DONE, "Ready"));
-            log.info("Model ready at {}", target);
-
-        } catch (Exception e) {
-            log.error("Model download failed", e);
-            progress.accept(new ModelDownload(0, 0, ModelDownload.State.FAILED,
-                    e.getClass().getSimpleName() + ": " + e.getMessage()));
+        } catch (IOException e) {
+            // The bytes on disk may still be complete; the checksum decides, not this.
+            log.warn(stalled.get()
+                    ? "No data for " + STALL.toSeconds() + " s, checking what is on disk"
+                    : "The transfer ended with an error, checking what is on disk anyway", e);
         }
+
+        long size = Files.size(part);
+        progress.accept(new ModelDownload(size, total,
+                ModelDownload.State.VERIFYING, "Checking the file"));
+
+        if (!verify(part)) {
+            if (size >= EXPECTED_BYTES) {
+                // Complete and still wrong: resuming would only append to a bad file and
+                // fail the same way on every later attempt.
+                Files.deleteIfExists(part);
+                progress.accept(new ModelDownload(0, total, ModelDownload.State.FAILED,
+                        "The downloaded file was damaged and has been removed. Try again."));
+            } else {
+                progress.accept(new ModelDownload(size, total, ModelDownload.State.FAILED,
+                        stalled.get()
+                                ? "The connection stalled. Starting again resumes where it stopped."
+                                : "The file is incomplete. Starting again resumes where it stopped."));
+            }
+            return Fetch.FINISHED;
+        }
+
+        Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
+        progress.accept(new ModelDownload(Files.size(target), Files.size(target),
+                ModelDownload.State.DONE, "Ready"));
+        log.info("Model ready at {}", target);
+        return Fetch.FINISHED;
     }
 
     /**

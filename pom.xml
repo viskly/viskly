@@ -21,6 +21,10 @@
     <java.version>25</java.version>
     <whisper-jni.version>1.7.1</whisper-jni.version>
     <sqlite.version>3.50.3.0</sqlite.version>
+    <!-- Above Spring Boot's 2.25.4 for GHSA-qv9r-c865-cp47. Not reachable here (log4j-api
+         is only a bridge to SLF4J), but a known advisory in a shipped jar is not worth
+         explaining to every reader of a scan. Drop once Spring Boot manages 2.25.5. -->
+    <log4j2.version>2.25.5</log4j2.version>
   </properties>
 
   <dependencies>
@@ -67,6 +71,9 @@
             makes it a UI agent — it works, but stays out of the user's way.
           -->
           <jvmArguments>--enable-native-access=ALL-UNNAMED -Dapple.awt.UIElement=true</jvmArguments>
+          <!-- jarmode-tools serves layered container images; this jar only ever runs
+               inside the app bundle. -->
+          <includeTools>false</includeTools>
         </configuration>
       </plugin>
     </plugins>

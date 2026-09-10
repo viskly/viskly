@@ -29,4 +29,9 @@ public final class ClipboardOnlyInjector implements TextInjector {
             return Result.FAILED;
         }
     }
+
+    @Override
+    public Result copy(String text) {
+        return insert(text);
+    }
 }

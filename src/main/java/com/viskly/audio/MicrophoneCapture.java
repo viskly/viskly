@@ -52,10 +52,13 @@ public class MicrophoneCapture implements SmartLifecycle, DisposableBean, AudioL
             return;
         }
         try {
-            line = (TargetDataLine) AudioSystem.getLine(info);
-            line.open(format, format.getFrameSize() * props.audio().sampleRate() / 10); // ~100 ms
+            TargetDataLine opening = (TargetDataLine) AudioSystem.getLine(info);
+            opening.open(format, format.getFrameSize() * props.audio().sampleRate() / 10); // ~100 ms
+            // Only an open line is kept. A line that failed to open used to stay in the
+            // field, and every dictation then read from it in a loop that never blocked.
+            line = opening;
             log.info("Microphone ready: {} Hz, mono, 16 bit", props.audio().sampleRate());
-        } catch (LineUnavailableException e) {
+        } catch (LineUnavailableException | RuntimeException e) {
             log.error("Could not open the microphone. On macOS check Settings > Privacy > "
                     + "Microphone for your terminal or for the app itself.", e);
         }
@@ -98,7 +101,13 @@ public class MicrophoneCapture implements SmartLifecycle, DisposableBean, AudioL
         while (reader == Thread.currentThread()) {
             int read = line.read(chunk, 0, chunk.length);
             if (read <= 0) {
-                continue;
+                // On an open, started line read() blocks until it has data. Zero means the
+                // line has gone (device unplugged, line closed); spinning here would burn a
+                // core until the key is released.
+                if (reader == Thread.currentThread()) {
+                    log.warn("The microphone stopped delivering audio, ending the recording");
+                }
+                return;
             }
             level = loudness(chunk, read);
             if (!buffer.append(chunk, read)) {

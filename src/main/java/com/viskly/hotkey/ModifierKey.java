@@ -29,6 +29,16 @@ public enum ModifierKey {
         this.deviceMask = deviceMask;
     }
 
+    /** Whether {@link #valueOf} would accept the name, without the exception. */
+    public static boolean isKnown(String name) {
+        for (ModifierKey key : values()) {
+            if (key.name().equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** "RIGHT_COMMAND" reads as a constant. This reads as a key. */
     public String label() {
         if (this == FN) {
