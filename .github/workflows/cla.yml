@@ -2,7 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # Asks the author of every pull request to sign CLA.md once, and records who has in
-# signatures/cla.json on main. CONTRIBUTING.md explains why the agreement exists.
+# signatures/cla.json on the cla-signatures branch. CONTRIBUTING.md explains why the
+# agreement exists.
+#
+# Not on main: main accepts changes only through pull requests, and this action commits
+# directly. On main it failed every check, on every pull request, with "Could not create
+# file: Changes must be made through a pull request". cla-signatures must stay unprotected.
 #
 # pull_request_target runs with write access even for pull requests from forks, which is
 # safe here only because nothing from the pull request is checked out or executed: the
@@ -40,7 +45,7 @@ jobs:
         with:
           path-to-document: https://github.com/viskly/viskly/blob/main/CLA.md
           path-to-signatures: signatures/cla.json
-          branch: main
+          branch: cla-signatures
           # The copyright holder needs no licence to their own project; bots have no
           # rights to grant.
           allowlist: k-krawczyk,dependabot[bot]
