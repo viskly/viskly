@@ -71,6 +71,21 @@ if [[ -n "${NOTARY_PROFILE}" ]] && [[ "${IDENTITY}" == "-" || "${DMG}" != true ]
   echo "Notarisation needs a Developer ID in VISKLY_SIGN_IDENTITY and --dmg."
   exit 1
 fi
+# Once a signed (not ad-hoc) Viskly has been opened, macOS's App Management protection
+# stops other programs, this terminal included, from changing or deleting it, and the
+# install step's rm -rf would fail file by file halfway through. Checked here, before a
+# build that could not be installed anyway, and before the running copy is quit.
+if [[ "${INSTALL}" == true && -d "/Applications/${APP}.app" ]]; then
+  probe="/Applications/${APP}.app/Contents/.viskly-write-probe"
+  if ! touch "${probe}" 2>/dev/null; then
+    echo "macOS protects the installed ${APP} from being replaced by this terminal."
+    echo "Either allow the terminal once in Settings > Privacy & Security > App Management,"
+    echo "or build without --install and drag target/dist/${APP}.app onto /Applications in"
+    echo "Finder, choosing Replace."
+    exit 1
+  fi
+  rm -f "${probe}"
+fi
 
 # Pin the JDK explicitly instead of trusting PATH.
 #

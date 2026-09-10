@@ -125,6 +125,14 @@ Every one of these was hit for real. They fail silently, which is why they are l
 - **Spring needs to be told which constructor is its own.** A bean with a second
   constructor for tests (`Settings`, `HistoryStore`) needs `@Autowired` on the other one,
   or startup fails looking for a no-argument constructor. `WiringTest` catches it.
+- **A signed Viskly in /Applications cannot be replaced from a terminal.** Once opened, it
+  falls under macOS's App Management protection: even `touch` inside the bundle fails.
+  `build-app.sh --install` checks this first and says what to do: allow the terminal under
+  App Management, or drag the build onto /Applications in Finder.
+- **A copy made outside Finder runs translocated.** An app that still carries the
+  quarantine attribute and was not moved by Finder is started from a random read-only
+  path. Consents still match, but anything that expects /Applications does not; the
+  drag-to-install layout of the disk image avoids it.
 - **Java reads unicode escapes inside comments.** A backslash followed by `u` in a
   Javadoc is compiled as an escape and fails the build.
 

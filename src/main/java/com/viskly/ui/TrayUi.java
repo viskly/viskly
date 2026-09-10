@@ -12,6 +12,7 @@ import java.awt.PopupMenu;
 import java.awt.RenderingHints;
 import java.awt.SystemTray;
 import java.awt.TrayIcon;
+import java.awt.desktop.AppReopenedListener;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BaseMultiResolutionImage;
 import java.awt.image.BufferedImage;
@@ -72,6 +73,7 @@ public class TrayUi implements SmartLifecycle {
     public void start() {
         running = true;
         installQuitHandler();
+        installReopenHandler();
         if (!SystemTray.isSupported()) {
             log.warn("This system has no menu bar for applications — skipping the icon");
             return;
@@ -148,6 +150,21 @@ public class TrayUi implements SmartLifecycle {
      * blocks on the tree lock while the event thread, holding it, waits for AppKit. The
      * process hangs for good and only kill -9 ends it.
      */
+    /**
+     * Opening Viskly while it already runs (a double click in Finder, Spotlight, Launchpad)
+     * used to do nothing visible: no Dock icon, no window, only a menu bar item that a
+     * crowded menu bar or the notch can hide. The first person to try it concluded the app
+     * was broken. macOS sends a running application a reopen event in that case; this
+     * answers it with the settings window.
+     */
+    private void installReopenHandler() {
+        if (!Desktop.isDesktopSupported()
+                || !Desktop.getDesktop().isSupported(Desktop.Action.APP_EVENT_REOPENED)) {
+            return;
+        }
+        Desktop.getDesktop().addAppEventListener((AppReopenedListener) event -> window.show());
+    }
+
     private void installQuitHandler() {
         if (!Desktop.isDesktopSupported()
                 || !Desktop.getDesktop().isSupported(Desktop.Action.APP_QUIT_HANDLER)) {
