@@ -284,8 +284,8 @@ public class SettingsWindow {
         if (chooser.getFile() == null) {
             return;
         }
-        // The filter is a hint the panel may ignore, so what actually decides is the
-        // checksum in install() — a .bin that is not this model is reported, not loaded.
+        // The filter is a hint the panel may ignore, so what actually decides is the check
+        // in install(): a file that is not a ggml model is reported, not loaded.
         Path source = Path.of(chooser.getDirectory(), chooser.getFile());
         downloadButton.setEnabled(false);
         chooseButton.setEnabled(false);
@@ -307,7 +307,7 @@ public class SettingsWindow {
             }
             case VERIFYING -> {
                 modelCard.progress().indeterminate();
-                modelCard.status("Checking the file", "574 MB to hash, this takes a moment");
+                modelCard.status("Checking the file", megabytes(update.total()) + " to read");
             }
             case DONE -> {
                 modelCard.progress().indeterminate();
@@ -543,6 +543,7 @@ public class SettingsWindow {
         modelPane.heading(
                 ready ? "Ready" : present ? "On disk, but it did not load" : "Not installed yet",
                 ready ? Ink.OK : Ink.ACCENT);
+        modelCard.path(models.path());
         modelCard.installed(present);
         downloadButton.setVisible(!present);
         chooseButton.setVisible(!present);
@@ -627,7 +628,7 @@ public class SettingsWindow {
 
         static final int H = 170;
 
-        private final transient Path path;
+        private transient Path path;
         private final transient ThinProgress progress = new ThinProgress();
 
         private String left = "";
@@ -647,6 +648,12 @@ public class SettingsWindow {
         void status(String left, String right) {
             this.left = left;
             this.right = right;
+            repaint();
+        }
+
+        /** Changes when a model is chosen from disk, which keeps its own file name. */
+        void path(Path value) {
+            this.path = value;
             repaint();
         }
 
@@ -670,7 +677,7 @@ public class SettingsWindow {
             Graphics2D g2 = Draw.smooth((Graphics2D) g.create());
             int w = getWidth();
 
-            Draw.text(g2, "large-v3-turbo, quantised. Runs entirely on this machine.",
+            Draw.text(g2, Draw.fit(g2, describe(path), Ink.body(13), w - 48),
                     Ink.body(13), Ink.MUTED, 24, 40);
             Draw.text(g2, Draw.fit(g2, home(path), Ink.mono(11), w - 48),
                     Ink.mono(11), Ink.FAINT, 24, 64);
@@ -686,6 +693,19 @@ public class SettingsWindow {
                 }
             }
             g2.dispose();
+        }
+
+        /**
+         * The model the download fetches has a sentence of its own. Anything chosen from
+         * disk is named by its file, the only thing known about it for certain.
+         */
+        private static String describe(Path path) {
+            String name = path.getFileName().toString();
+            if (name.equals(ModelStore.FILE)) {
+                return "large-v3-turbo, quantised. Runs entirely on this machine.";
+            }
+            return name.replaceFirst("^ggml-", "").replaceFirst("\\.bin$", "")
+                    + ", chosen from disk. Runs entirely on this machine.";
         }
 
         /** An absolute path to a home directory is noise; the tilde is what people read. */

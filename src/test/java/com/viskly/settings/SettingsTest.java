@@ -64,6 +64,25 @@ class SettingsTest {
     }
 
     @Test
+    void aModelChosenFromDiskIsRememberedUnderItsOwnName() throws IOException {
+        Settings settings = loadFrom("");
+        assertThat(settings.modelPath()).isEqualTo(Path.of("model.bin"));
+
+        settings.modelPath(dir.resolve("ggml-large-v3-turbo-q8_0.bin"));
+        settings.save();
+
+        assertThat(new Settings(DEFAULTS, dir.resolve("config.properties")).modelPath())
+                .isEqualTo(dir.resolve("ggml-large-v3-turbo-q8_0.bin"));
+    }
+
+    @Test
+    void aModelPathWrittenByHandMayStartWithATilde() throws IOException {
+        assertThat(loadFrom("model.path=~/models/ggml-base.bin\n").modelPath())
+                .isEqualTo(Path.of(System.getProperty("user.home"), "models", "ggml-base.bin"));
+        assertThat(loadFrom("model.path=  \n").modelPath()).isEqualTo(Path.of("model.bin"));
+    }
+
+    @Test
     void savingReplacesTheFileAndLeavesNoTemporaryBehind() throws IOException {
         Settings settings = loadFrom("hotkey=FN\n");
         settings.language("en");

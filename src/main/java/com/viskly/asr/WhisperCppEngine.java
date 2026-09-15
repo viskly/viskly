@@ -5,6 +5,7 @@ package com.viskly.asr;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 
 import io.github.givimad.whisperjni.WhisperContext;
 import io.github.givimad.whisperjni.WhisperFullParams;
@@ -18,6 +19,7 @@ import org.springframework.beans.factory.InitializingBean;
 import org.springframework.stereotype.Component;
 
 import com.viskly.config.VisklyProperties;
+import com.viskly.settings.Settings;
 
 /**
  * whisper.cpp over JNI.
@@ -35,6 +37,7 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
     private static final Logger log = LoggerFactory.getLogger(WhisperCppEngine.class);
 
     private final VisklyProperties props;
+    private final Settings settings;
     private final Object lock = new Object();
 
     // Volatile: set on the thread that loads the model (startup, or a virtual thread after
@@ -43,8 +46,9 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
     private volatile WhisperJNI whisper;
     private volatile WhisperContext context;
 
-    public WhisperCppEngine(VisklyProperties props) {
+    public WhisperCppEngine(VisklyProperties props, Settings settings) {
         this.props = props;
+        this.settings = settings;
     }
 
     /** False until a model is loaded. Dictation is refused rather than attempted. */
@@ -67,21 +71,21 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
         if (context != null) {
             return;
         }
-        if (!Files.exists(props.modelPath())) {
-            log.warn("No model at {} — dictation stays disabled until it is downloaded",
-                    props.modelPath());
+        Path model = settings.modelPath();
+        if (!Files.exists(model)) {
+            log.warn("No model at {} — dictation stays disabled until it is downloaded", model);
             return;
         }
         try {
-            loadModel();
+            loadModel(model);
         } catch (Exception | LinkageError e) {
             // LinkageError: a native library that will not load throws UnsatisfiedLinkError,
             // an Error, which used to escape here and abort the whole startup.
-            log.error("Could not load the model from {}", props.modelPath(), e);
+            log.error("Could not load the model from {}", model, e);
         }
     }
 
-    private void loadModel() throws Exception {
+    private void loadModel(Path model) throws Exception {
         WhisperJNI.loadLibrary();
         if (!props.asr().verboseModelLog()) {
             // Otherwise whisper.cpp floods the console. Turn it on in configuration when
@@ -92,8 +96,8 @@ public class WhisperCppEngine implements TranscriptionEngine, InitializingBean, 
         whisper = new WhisperJNI();
 
         long started = System.currentTimeMillis();
-        context = whisper.init(props.modelPath());
-        log.info("Model loaded in {} ms ({} threads)",
+        context = whisper.init(model);
+        log.info("Model {} loaded in {} ms ({} threads)", model.getFileName(),
                 System.currentTimeMillis() - started, props.effectiveThreads());
     }
 

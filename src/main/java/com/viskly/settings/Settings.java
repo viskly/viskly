@@ -67,6 +67,7 @@ public class Settings {
         defaults.setProperty("inject.restoreDelayMillis", String.valueOf(props.inject().restoreDelayMillis()));
         defaults.setProperty("ui.indicatorBottomMargin", String.valueOf(props.ui().indicatorBottomMargin()));
         defaults.setProperty("history.enabled", "true");
+        defaults.setProperty("model.path", props.modelPath().toString());
         values.putAll(defaults);
 
         load();
@@ -106,6 +107,9 @@ public class Settings {
         }
         if (values.getProperty("language").isBlank()) {
             values.setProperty("language", defaults.getProperty("language"));
+        }
+        if (values.getProperty("model.path").isBlank()) {
+            values.setProperty("model.path", defaults.getProperty("model.path"));
         }
         log.info("Settings loaded from {}", file);
     }
@@ -186,6 +190,24 @@ public class Settings {
 
     public void historyEnabled(boolean value) {
         values.setProperty("history.enabled", String.valueOf(value));
+    }
+
+    /**
+     * The model whisper.cpp loads. Here and not only in application.yml because the yml is
+     * inside the signed bundle: a model chosen from disk keeps its own file name, and this
+     * is the only place that name can be remembered. A leading {@code ~/} is expanded, since
+     * that is how anyone editing the file by hand writes a path.
+     */
+    public Path modelPath() {
+        String value = values.getProperty("model.path");
+        if (value.startsWith("~/")) {
+            return Path.of(System.getProperty("user.home"), value.substring(2));
+        }
+        return Path.of(value);
+    }
+
+    public void modelPath(Path value) {
+        values.setProperty("model.path", value.toAbsolutePath().toString());
     }
 
     public Path file() {
