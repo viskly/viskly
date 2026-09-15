@@ -409,8 +409,21 @@ if [[ "${DMG}" == true ]]; then
   ditto "${BUNDLE}" "${DMG_STAGE}/${APP}.app"
   # The layout people expect from a Mac download: the app beside a link to drag it onto.
   ln -s /Applications "${DMG_STAGE}/Applications"
-  hdiutil create -volname "${APP}" -srcfolder "${DMG_STAGE}" -ov -format UDZO \
-    "${DMG_PATH}" >/dev/null
+  # hdiutil create now and then fails with "Resource busy" on GitHub's macOS runners, after
+  # a build that was otherwise fine (it did on macos-15-intel in PR #3). Nothing in the
+  # staged folder is wrong, and a release should not fail on it, so it gets a few tries.
+  for attempt in 1 2 3 4; do
+    if hdiutil create -volname "${APP}" -srcfolder "${DMG_STAGE}" -ov -format UDZO \
+      "${DMG_PATH}" >/dev/null; then
+      break
+    fi
+    if [[ "${attempt}" -eq 4 ]]; then
+      echo "hdiutil create failed four times."
+      exit 1
+    fi
+    echo "    hdiutil create failed, trying again (${attempt} of 3)"
+    sleep $((attempt * 5))
+  done
   if [[ "${IDENTITY}" != "-" ]]; then
     codesign --force --timestamp --sign "${IDENTITY}" "${DMG_PATH}"
   fi
