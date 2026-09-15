@@ -64,7 +64,7 @@ import com.viskly.update.UpdateCheck;
  *
  * <p>It exists for four things a menu bar icon cannot do: download 574 MB with something
  * to look at, change a setting that used to live inside the jar, show what has been
- * dictated, and say which of the three macOS consents is missing.
+ * dictated, and say which of the two macOS consents is missing.
  *
  * <p>Everything in it is painted by this codebase. That is not decoration for its own
  * sake — a {@code JTabbedPane} with default buttons and a {@code JTable} is recognisably a
@@ -114,7 +114,6 @@ public class SettingsWindow {
 
     private Pane permissionsPane;
     private PermissionCard microphoneCard;
-    private PermissionCard inputMonitoringCard;
     private PermissionCard accessibilityCard;
 
     public SettingsWindow(Settings settings, ModelStore models, WhisperCppEngine engine,
@@ -412,13 +411,13 @@ public class SettingsWindow {
             case UpdateCheck.Result.Failed failed -> Ask.tell(frame, "Could not check",
                     failed.reason());
             case UpdateCheck.Result.Available available -> {
-                // Said before the download, not after: an ad-hoc signed build loses its
-                // consents when replaced, and the shortcut silently doing nothing after an
-                // update is exactly the surprise worth a sentence here.
+                // Said before the download: people expect to start over, and the release
+                // is signed by the same team, so macOS keeps the consents and the model,
+                // settings and history live outside the app.
                 boolean open = Ask.confirm(frame, "Version " + available.latest() + " is out",
                         "You have " + available.installed() + ". The download page opens in "
-                                + "your browser. After replacing the app, grant Input Monitoring "
-                                + "and Accessibility to the new one again.",
+                                + "your browser. Drag the new Viskly over this one: the model, "
+                                + "your settings, the history and the permissions all stay.",
                         "Open the download page", false);
                 if (open) {
                     open(available.page());
@@ -497,19 +496,21 @@ public class SettingsWindow {
         microphoneCard = new PermissionCard("Microphone",
                 "Recording. The system asks for this one by itself.",
                 () -> openPane("Privacy_Microphone"));
-        inputMonitoringCard = new PermissionCard("Input Monitoring",
-                "Receiving the shortcut. Without it the key does nothing, silently.",
-                () -> openPane("Privacy_ListenEvent"));
         accessibilityCard = new PermissionCard("Accessibility",
-                "Pasting the text. Without it the transcript stays in the clipboard.",
-                () -> openPane("Privacy_Accessibility"));
+                "Pasting the text, and Escape to cancel. Without it the transcript stays in "
+                        + "the clipboard.",
+                () -> {
+                    // The system prompt is Apple's way of putting Viskly on the list, so
+                    // there is a switch to flip when the pane opens.
+                    injector.askToPaste();
+                    openPane("Privacy_Accessibility");
+                });
 
         permissionsPane.row(microphoneCard, 0);
-        permissionsPane.row(inputMonitoringCard, 10);
         permissionsPane.row(accessibilityCard, 10);
-        permissionsPane.row(new Hint("After granting a consent, quit Viskly and start it "
-                + "again. macOS hands permissions to a process when it launches, never to "
-                + "one already running."), 24);
+        permissionsPane.row(new Hint("The shortcut itself needs no permission: Viskly sees only "
+                + "that a modifier key went down or up. Accessibility works as soon as the "
+                + "switch is on, with no restart."), 24);
         permissionsPane.row(Box.createVerticalGlue(), 0);
         return permissionsPane;
     }
@@ -523,11 +524,10 @@ public class SettingsWindow {
         // line rather than reporting a denial, so the capture opening at startup is the
         // only evidence available here.
         microphoneCard.granted(true);
-        inputMonitoringCard.granted(hotkey.isActive());
         accessibilityCard.granted(injector.canPaste());
 
-        boolean all = hotkey.isActive() && injector.canPaste();
-        permissionsPane.heading(all ? "All three granted" : "Something is missing",
+        boolean all = injector.canPaste();
+        permissionsPane.heading(all ? "Both granted" : "Something is missing",
                 all ? Ink.OK : Ink.ACCENT);
     }
 
@@ -558,7 +558,7 @@ public class SettingsWindow {
         if (!ready) {
             sidebar.status("Off until the model loads", Ink.ACCENT);
         } else if (!hotkey.isActive()) {
-            sidebar.status("Off: no Input Monitoring", Ink.ACCENT);
+            sidebar.status("Off: the shortcut is not installed", Ink.ACCENT);
         } else {
             sidebar.status("Listening on " + key.shortLabel(), Ink.OK);
         }
@@ -588,8 +588,17 @@ public class SettingsWindow {
         return label;
     }
 
+    /**
+     * Through /usr/bin/open, not Desktop.browse: browse hands every URI to the default web
+     * browser, which then asks whether to open System Settings before doing it.
+     */
     private void openPane(String pane) {
-        open(URI.create("x-apple.systempreferences:com.apple.preference.security?" + pane));
+        String uri = "x-apple.systempreferences:com.apple.preference.security?" + pane;
+        try {
+            new ProcessBuilder("/usr/bin/open", uri).start();
+        } catch (IOException e) {
+            log.warn("Could not open {}", uri, e);
+        }
     }
 
     private void open(URI uri) {

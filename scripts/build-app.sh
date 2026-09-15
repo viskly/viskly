@@ -23,8 +23,7 @@
 #                          Anything meant for other Macs needs one whose libraries link
 #                          nothing outside itself, such as Temurin; Homebrew's does not.
 #
-# IMPORTANT about permissions: macOS ties the Accessibility and Input Monitoring consents
-# to the signature. Ad-hoc, that is the hash of this exact build, so EVERY rebuild looks
+# IMPORTANT about permissions: macOS ties the Accessibility consent to the signature. Ad-hoc, that is the hash of this exact build, so EVERY rebuild looks
 # like a new application and wipes them. With a Developer ID it is the team, and they
 # survive updates.
 
@@ -260,8 +259,8 @@ MODULES="$("${JAVA}" --list-modules | cut -d'@' -f1 | grep -vE '^jdk\.(jlink|jpa
 # The JVM options, since a comment cannot sit inside the command below:
 #   whisperjni.libdir, org.sqlite.lib.*: load the natives from the bundle (see above).
 #   DisableAttachMechanism, -EnableDynamicAgentLoading: a process of the same user could
-#     otherwise attach to this JVM and run code with its Input Monitoring, Accessibility
-#     and microphone consents. It also means jcmd and jstack cannot reach a packaged build;
+#     otherwise attach to this JVM and run code with its Accessibility and microphone
+#     consents. It also means jcmd and jstack cannot reach a packaged build;
 #     debug with mvn spring-boot:run.
 # $APPDIR stays literal here: the launcher expands it to Contents/app at every start.
 # shellcheck disable=SC2016
@@ -493,14 +492,9 @@ cat <<INFO
 Done: ${BUNDLE}${DMG_PATH:+
 Disk image: ${DMG_PATH}}${GATEKEEPER}
 
-On first launch macOS will ask about the microphone. The other two consents you have to
-grant by hand, in Settings > Privacy & Security:
-
-  Input Monitoring   -> ${APP}    (listening for the shortcut)
-  Accessibility      -> ${APP}    (pasting text)
-
-After ticking them, quit the application and start it again — macOS reads permissions
-when the process starts.
+On first launch macOS will ask about the microphone. Accessibility, for pasting text and
+for Escape, is granted from Viskly's settings: Permissions, then Open. The shortcut needs
+no permission, and nothing needs a restart.
 
 The model (574 MB) is not part of the package. If you do not have it yet:
   ./scripts/get-model.sh

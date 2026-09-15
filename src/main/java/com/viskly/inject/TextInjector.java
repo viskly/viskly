@@ -35,6 +35,15 @@ public interface TextInjector {
         return true;
     }
 
+    /**
+     * Asks for what pasting needs. On macOS that is the system's Accessibility prompt,
+     * which also puts the application on the Accessibility list, ready to be switched on.
+     * Called from a button, never at startup: a prompt nobody asked for, before the
+     * application has shown anything, is how the first run used to feel.
+     */
+    default void askToPaste() {
+    }
+
     enum Result {
         PASTED,
         CLIPBOARD_ONLY,

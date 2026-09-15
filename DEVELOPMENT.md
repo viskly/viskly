@@ -69,15 +69,21 @@ Every one of these was hit for real. They fail silently, which is why they are l
 - **Nothing keeps a non-web Spring Boot app alive.** `main()` blocks on a latch released
   by `ContextClosedEvent`. Remove it and the JVM exits a fraction of a second after
   startup.
-- **macOS has two different consents**, and they are easy to confuse. Input Monitoring
-  (IOHID) is what a listen-only `CGEventTap` needs. Accessibility
-  (`AXIsProcessTrusted`) is what `CGEventPost` needs to paste. Neither is reported to the
-  application when missing: the shortcut just does nothing.
-- **A tap that exists is not a tap that works.** Without Input Monitoring macOS still
-  creates the listen-only tap, then keeps disabling it and delivers nothing. Whether the
-  shortcut works is decided by `IOHIDCheckAccess` at startup, not by the tap.
+- **Modifier keys need no consent; every other key does.** A global NSEvent monitor for
+  `flagsChanged` receives the modifiers with no consent at all, which is why the shortcut
+  must be a modifier and why `MacModifierMonitor` needs nothing. The same monitor for
+  `keyDown` needs Input Monitoring: without it, it installs, reports success and delivers
+  nothing. Escape is therefore caught by `EscapeTap`, an active `CGEventTap`, which needs
+  Accessibility instead and is enabled only while the shortcut is held. The listen-only
+  tap this replaced needed Input Monitoring, put up macOS's "Keystroke Receiving" prompt at
+  every launch without it, and needed a restart once it was granted.
+- **Accessibility is live, and only a prompt puts the app on its list.**
+  `AXIsProcessTrusted` turns true about a second after the switch goes on, no restart.
+  `AXIsProcessTrustedWithOptions` with the prompt option is Apple's way to add the app to
+  the list; the Permissions tab calls it before opening the pane. Creating an active tap without the
+  consent also prompts, so `EscapeTap` checks first rather than asking mid-sentence.
 - **Consents are tied to the signature.** A local build is ad-hoc signed, so every rebuild
-  looks like a new application to macOS and both manual consents are wiped. While
+  looks like a new application to macOS and the Accessibility consent is wiped. While
   iterating, use `mvn spring-boot:run` and grant the consents to the terminal instead.
   After a rebuild the old Viskly entry stays in the list, ticked, and matches nothing:
   ticking it again does not help, it has to be removed with "-" and added again.
@@ -86,8 +92,9 @@ Every one of these was hit for real. They fail silently, which is why they are l
   the shutdown hook then waits for AWT work that needs it. The process hangs for good.
   `TrayUi` installs its own quit handler and closes the context on a separate thread, then
   exits explicitly: a settings window opened once keeps AWT, and so the JVM, alive.
-- **A CGEventTap upcall must not block.** It runs on the system event-loop thread;
-  blocking it freezes the keyboard for the whole machine until the timeout.
+- **An active CGEventTap upcall must not block.** Every key event waits for it, so
+  blocking it freezes the keyboard for the whole machine until the timeout. `EscapeTap`
+  runs on a thread of its own and is enabled only while the shortcut is held.
 - **The indicator window must never take focus.** If it does, the frontmost application
   stops being frontmost and the synthetic ⌘V pastes somewhere else.
 - **`CFRunLoop` pins its thread.** It has to be a platform thread, never a virtual one.
@@ -112,7 +119,7 @@ Every one of these was hit for real. They fail silently, which is why they are l
 - **Temurin 25 has no packaged modules**, and refuses to put `jdk.jlink` into another
   image. `build-app.sh` leaves out `jdk.jlink` and `jdk.jpackage`, which are tools.
 - **Released builds run under library validation** and must stay that way: without it, an
-  application holding Input Monitoring lends that consent to any library slipped into it.
+  application holding Accessibility lends that consent to any library slipped into it.
   Every library it loads is therefore signed by the team, and the natives are loaded from
   `Contents/app/natives` inside the sealed bundle (the `whisperjni.libdir` and
   `org.sqlite.lib.*` options), not extracted to a temporary directory. Ad-hoc builds have
@@ -151,7 +158,7 @@ Three ports with adapters; everything else is portable and testable without an O
 ```
 com.viskly
 ├─ session/DictationSession    state machine, publishes Spring events, calls nothing directly
-├─ hotkey/HotkeyListener       port → MacHotkeyListener (FFM) | ConsoleHotkeyListener
+├─ hotkey/HotkeyListener       port → MacModifierMonitor (FFM) | ConsoleHotkeyListener
 ├─ asr/TranscriptionEngine     port → WhisperCppEngine (whisper-jni)
 ├─ inject/TextInjector         port → MacTextInjector (FFM, NSPasteboard) | ClipboardOnlyInjector
 ├─ audio/                      capture, pre-allocated buffer, level for the indicator

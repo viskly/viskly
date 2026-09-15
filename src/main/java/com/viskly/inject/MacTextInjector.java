@@ -62,6 +62,12 @@ public final class MacTextInjector implements TextInjector {
     private final MethodHandle post;
     private final MethodHandle release;
     private final MethodHandle isProcessTrusted;
+    private final MethodHandle isProcessTrustedWithOptions;
+    private final MethodHandle dictionaryCreate;
+    private final MemorySegment promptOption;
+    private final MemorySegment booleanTrue;
+    private final MemorySegment keyCallbacks;
+    private final MemorySegment valueCallbacks;
 
     /** Null if AppKit could not be reached, in which case AWT carries the text alone. */
     private final MacPasteboard pasteboard = openPasteboard();
@@ -92,6 +98,20 @@ public final class MacTextInjector implements TextInjector {
         this.isProcessTrusted = linker.downcallHandle(
                 services.findOrThrow("AXIsProcessTrusted"),
                 FunctionDescriptor.of(JAVA_BOOLEAN));
+        this.isProcessTrustedWithOptions = linker.downcallHandle(
+                services.findOrThrow("AXIsProcessTrustedWithOptions"),
+                FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS));
+        this.dictionaryCreate = linker.downcallHandle(
+                foundation.findOrThrow("CFDictionaryCreate"),
+                FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS));
+        // Globals of pointer type: the symbol is the cell, so it is read once more. The two
+        // callback tables are structs, passed by the symbol's own address.
+        this.promptOption = services.findOrThrow("kAXTrustedCheckOptionPrompt")
+                .reinterpret(ADDRESS.byteSize()).get(ADDRESS, 0);
+        this.booleanTrue = foundation.findOrThrow("kCFBooleanTrue")
+                .reinterpret(ADDRESS.byteSize()).get(ADDRESS, 0);
+        this.keyCallbacks = foundation.findOrThrow("kCFTypeDictionaryKeyCallBacks");
+        this.valueCallbacks = foundation.findOrThrow("kCFTypeDictionaryValueCallBacks");
     }
 
     @Override
@@ -171,6 +191,26 @@ public final class MacTextInjector implements TextInjector {
     @Override
     public boolean canPaste() {
         return trusted();
+    }
+
+    @Override
+    public void askToPaste() {
+        if (trusted()) {
+            return;
+        }
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment keys = call.allocate(ADDRESS, 1);
+            keys.set(ADDRESS, 0, promptOption);
+            MemorySegment values = call.allocate(ADDRESS, 1);
+            values.set(ADDRESS, 0, booleanTrue);
+            MemorySegment options = (MemorySegment) dictionaryCreate.invokeExact(
+                    MemorySegment.NULL, keys, values, 1L, keyCallbacks, valueCallbacks);
+            boolean granted = (boolean) isProcessTrustedWithOptions.invokeExact(options);
+            release.invokeExact(options);
+            log.info("Asked for Accessibility, granted: {}", granted);
+        } catch (Throwable t) {
+            log.warn("Could not ask for Accessibility", t);
+        }
     }
 
     private boolean trusted() {
