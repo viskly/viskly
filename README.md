@@ -24,26 +24,22 @@ For working on the code, `mvn spring-boot:run` is enough. It needs JDK 25
 
 ## Permissions
 
-macOS requires **three separate consents**, and this is the biggest friction on first
-launch:
+macOS asks for **two consents**:
 
 | Consent | What for | When |
 |---|---|---|
 | Microphone | recording | the system asks by itself |
-| Input Monitoring | listening for the shortcut | you tick it by hand |
-| Accessibility | pasting text | you tick it by hand |
+| Accessibility | pasting text, and Escape to cancel | Settings → Permissions → Open, then flip the switch |
 
-The last two live in Settings → Privacy & Security. The app asks for both at startup, so
-it appears on both lists on its own. You only have to flip the switch.
+**The shortcut needs no consent.** It is a modifier key, and Viskly watches only whether
+modifiers go down and up, which macOS allows without asking. Ordinary keys reach the app
+only while the shortcut is held, and only to recognise Escape.
 
-**After granting a consent, quit the app and start it again.** macOS reads permissions
-when the process starts; it will not hand them to a running one. When working from a
-terminal this applies to the terminal, not to Java: quit it with Cmd+Q, because a new tab
-is not enough.
+Accessibility takes effect as soon as the switch is on; there is no restart.
 
 Released builds are signed with a Developer ID, and macOS keeps the consents across
 updates. A build you make yourself is ad-hoc signed. macOS then identifies it by its
-signature hash, so **every rebuild wipes both manual consents**.
+signature hash, so **every rebuild wipes the Accessibility consent**.
 
 ## Configuration
 
@@ -115,7 +111,7 @@ operating system.
 com.viskly
 ├─ session/DictationSession    state machine IDLE → RECORDING → TRANSCRIBING
 ├─ session/SessionEvents       Spring events instead of direct calls
-├─ hotkey/HotkeyListener       port → MacHotkeyListener (FFM) | ConsoleHotkeyListener
+├─ hotkey/HotkeyListener       port → MacModifierMonitor (FFM) | ConsoleHotkeyListener
 ├─ audio/MicrophoneCapture     TargetDataLine, opened once at startup
 ├─ audio/AudioLevel            signal level port for the indicator
 ├─ asr/TranscriptionEngine     port → WhisperCppEngine (whisper-jni)
@@ -130,10 +126,12 @@ window, the model download and the history, is in [DEVELOPMENT.md](DEVELOPMENT.m
 
 ## Decisions worth remembering
 
-**The shortcut goes through Panama FFM, not JNI.** `CGEventTapCreate` is called straight
-from Java, with no C. The alternative, JNativeHook, sits on a release from March 2022, a
-poor foundation for an application meant to survive future macOS versions. The tap runs
-in *listen only* mode, so it cannot lock up the keyboard.
+**The shortcut goes through Panama FFM, not JNI.** AppKit's NSEvent monitors are called
+straight from Java, with no C. The alternative, JNativeHook, sits on a release from March
+2022, a poor foundation for an application meant to survive future macOS versions. The
+shortcut is watched with a monitor for modifier changes, which needs no consent and cannot
+hold up the keyboard. The one event tap left, for Escape, is switched on only while the
+shortcut is held.
 
 **The model and the microphone start with the application.** Loading large-v3-turbo takes
 seconds, opening a `TargetDataLine` tens of milliseconds. Neither can happen after the key
@@ -185,9 +183,8 @@ GPL-3.0. The full text is in [LICENSE](LICENSE).
 
 Copyright (C) 2026 Karol Krawczyk.
 
-The choice is deliberate rather than a default. Viskly asks for three macOS consents
-(microphone, Input Monitoring and Accessibility), which together is everything a keylogger
-would need. The claim on the site is that no audio and no keystroke leaves the machine, and
+The choice is deliberate rather than a default. Viskly asks for the microphone and for
+Accessibility, and Accessibility alone is enough to read every key pressed on the machine. The claim on the site is that no audio and no keystroke leaves the machine, and
 in a closed binary that is a claim nobody can check. Readable source is what makes it
 verifiable, and a copyleft licence is what keeps it readable in anything built on top of
 this.

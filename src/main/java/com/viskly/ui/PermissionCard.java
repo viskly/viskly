@@ -15,7 +15,7 @@ import com.viskly.ui.theme.FlatButton;
 import com.viskly.ui.theme.Ink;
 
 /**
- * One of the three macOS consents: what it is for, whether it is in force, and a way to
+ * One of the macOS consents: what it is for, whether it is in force, and a way to
  * go and grant it.
  *
  * <p>The button only appears when the consent is missing. macOS gives no way to revoke

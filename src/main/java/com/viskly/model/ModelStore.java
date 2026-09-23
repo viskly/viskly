@@ -9,6 +9,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -25,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import com.viskly.config.VisklyProperties;
+import com.viskly.settings.Settings;
 
 /**
  * Finds the speech model and, when it is missing, fetches it.
@@ -43,13 +45,16 @@ public class ModelStore {
 
     private static final Logger log = LoggerFactory.getLogger(ModelStore.class);
 
+    /** The file the download fetches, as whisper.cpp publishes it. */
+    public static final String FILE = "ggml-large-v3-turbo-q5_0.bin";
+
     /**
      * Pinned to the commit that holds the file with {@link #SHA256}, not to main. A new
      * upload under the same name on main would otherwise fail the checksum on every fresh
      * install, with nothing the user could do about it.
      */
     private static final String URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/"
-            + "98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-large-v3-turbo-q5_0.bin";
+            + "98aa99a0a9db05ae2342309f5096248665f7cba3/" + FILE;
     private static final String SHA256 =
             "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
     private static final long EXPECTED_BYTES = 574_041_195L;
@@ -58,20 +63,25 @@ public class ModelStore {
     /** No byte for this long means the connection is dead, even if the socket says not. */
     private static final Duration STALL = Duration.ofSeconds(60);
 
+    /** Where the download goes: the file that {@link #URL} and {@link #SHA256} describe. */
     private final Path target;
+    private final Settings settings;
     private volatile boolean cancelled;
 
-    public ModelStore(VisklyProperties props) {
+    public ModelStore(VisklyProperties props, Settings settings) {
         this.target = props.modelPath();
+        this.settings = settings;
     }
 
+    /** The model in use, which is not the downloaded one when the user chose another. */
     public Path path() {
-        return target;
+        return settings.modelPath();
     }
 
     public boolean isPresent() {
+        Path path = path();
         try {
-            return Files.exists(target) && Files.size(target) > MIN_BYTES;
+            return Files.exists(path) && Files.size(path) > MIN_BYTES;
         } catch (IOException e) {
             return false;
         }
@@ -213,7 +223,7 @@ public class ModelStore {
         progress.accept(new ModelDownload(size, total,
                 ModelDownload.State.VERIFYING, "Checking the file"));
 
-        if (!verify(part)) {
+        if (!verifyChecksum(part)) {
             if (size >= EXPECTED_BYTES) {
                 // Complete and still wrong: resuming would only append to a bad file and
                 // fail the same way on every later attempt.
@@ -230,6 +240,7 @@ public class ModelStore {
         }
 
         Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
+        use(target);
         progress.accept(new ModelDownload(Files.size(target), Files.size(target),
                 ModelDownload.State.DONE, "Ready"));
         log.info("Model ready at {}", target);
@@ -245,6 +256,10 @@ public class ModelStore {
      *
      * <p>It is copied rather than moved. A model that stops working because the user
      * tidied up their Downloads folder is a support question with no visible cause.
+     *
+     * <p>The copy keeps the name it came with. It used to be saved under the name of the
+     * model this class downloads, so a 3 GB large-v3 sat in the models folder, and in the
+     * log, calling itself large-v3-turbo-q5_0.
      */
     public void install(Path source, Consumer<ModelDownload> progress) {
         try {
@@ -252,16 +267,20 @@ public class ModelStore {
             progress.accept(new ModelDownload(size, size, ModelDownload.State.VERIFYING,
                     "Checking the file"));
 
-            if (!verify(source)) {
+            if (!looksLikeModel(source)) {
                 progress.accept(new ModelDownload(size, size, ModelDownload.State.FAILED,
-                        "That file is not the model Viskly expects, or it is incomplete."));
+                        "That file is not a whisper.cpp model, or it is incomplete."));
                 return;
             }
 
-            Files.createDirectories(target.getParent());
-            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+            Path copy = target.resolveSibling(source.getFileName());
+            Files.createDirectories(copy.getParent());
+            // A file picked from inside the models folder is the copy already; Files.copy
+            // leaves a file copied onto itself alone.
+            Files.copy(source, copy, StandardCopyOption.REPLACE_EXISTING);
+            use(copy);
             progress.accept(new ModelDownload(size, size, ModelDownload.State.DONE, "Ready"));
-            log.info("Model installed from {} to {}", source, target);
+            log.info("Model installed from {} to {}", source, copy);
 
         } catch (Exception e) {
             log.error("Could not install the model from {}", source, e);
@@ -270,7 +289,52 @@ public class ModelStore {
         }
     }
 
-    private boolean verify(Path file) {
+    /** Makes the engine load this file from now on, the next launch included. */
+    private void use(Path model) {
+        if (!model.toAbsolutePath().equals(settings.modelPath().toAbsolutePath())) {
+            settings.modelPath(model);
+            settings.save();
+        }
+    }
+
+    /**
+     * Whether a file the user picked is a whisper.cpp model at all.
+     *
+     * <p>Deliberately not a checksum. A file chosen from disk is whichever model that
+     * person wanted — large-v3, a quantisation with a different trade-off, an English-only
+     * build — and demanding the hash of the one model this class knows how to download
+     * would reject every one of them. Which is what it did until this was split in two.
+     *
+     * <p>What can be checked is the shape: ggml files open with the magic number
+     * 0x67676D6C, which on disk, little-endian, reads as "lmgg". Anything else is an error
+     * page, a truncated transfer or a different format, and whisper.cpp would fail on it
+     * with a message nobody can act on.
+     */
+    private boolean looksLikeModel(Path file) {
+        try {
+            if (Files.size(file) < MIN_BYTES) {
+                log.warn("{} is too small to be a model ({} bytes)", file, Files.size(file));
+                return false;
+            }
+            byte[] magic = new byte[4];
+            try (InputStream in = Files.newInputStream(file)) {
+                if (in.read(magic) != 4) {
+                    return false;
+                }
+            }
+            if (!"lmgg".equals(new String(magic, StandardCharsets.US_ASCII))) {
+                log.warn("{} does not start with the ggml magic number", file);
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            log.warn("Could not read {}", file, e);
+            return false;
+        }
+    }
+
+    /** The download is of one known file, so the whole hash has to match. */
+    private boolean verifyChecksum(Path file) {
         try {
             if (Files.size(file) < MIN_BYTES) {
                 return false;

@@ -58,7 +58,6 @@ body:
       description: System Settings > Privacy & Security.
       options:
         - label: Microphone
-        - label: Input Monitoring
         - label: Accessibility
 
   - type: textarea

@@ -64,7 +64,7 @@ import com.viskly.update.UpdateCheck;
  *
  * <p>It exists for four things a menu bar icon cannot do: download 574 MB with something
  * to look at, change a setting that used to live inside the jar, show what has been
- * dictated, and say which of the three macOS consents is missing.
+ * dictated, and say which of the two macOS consents is missing.
  *
  * <p>Everything in it is painted by this codebase. That is not decoration for its own
  * sake — a {@code JTabbedPane} with default buttons and a {@code JTable} is recognisably a
@@ -114,7 +114,6 @@ public class SettingsWindow {
 
     private Pane permissionsPane;
     private PermissionCard microphoneCard;
-    private PermissionCard inputMonitoringCard;
     private PermissionCard accessibilityCard;
 
     public SettingsWindow(Settings settings, ModelStore models, WhisperCppEngine engine,
@@ -284,8 +283,8 @@ public class SettingsWindow {
         if (chooser.getFile() == null) {
             return;
         }
-        // The filter is a hint the panel may ignore, so what actually decides is the
-        // checksum in install() — a .bin that is not this model is reported, not loaded.
+        // The filter is a hint the panel may ignore, so what actually decides is the check
+        // in install(): a file that is not a ggml model is reported, not loaded.
         Path source = Path.of(chooser.getDirectory(), chooser.getFile());
         downloadButton.setEnabled(false);
         chooseButton.setEnabled(false);
@@ -307,7 +306,7 @@ public class SettingsWindow {
             }
             case VERIFYING -> {
                 modelCard.progress().indeterminate();
-                modelCard.status("Checking the file", "574 MB to hash, this takes a moment");
+                modelCard.status("Checking the file", megabytes(update.total()) + " to read");
             }
             case DONE -> {
                 modelCard.progress().indeterminate();
@@ -412,13 +411,13 @@ public class SettingsWindow {
             case UpdateCheck.Result.Failed failed -> Ask.tell(frame, "Could not check",
                     failed.reason());
             case UpdateCheck.Result.Available available -> {
-                // Said before the download, not after: an ad-hoc signed build loses its
-                // consents when replaced, and the shortcut silently doing nothing after an
-                // update is exactly the surprise worth a sentence here.
+                // Said before the download: people expect to start over, and the release
+                // is signed by the same team, so macOS keeps the consents and the model,
+                // settings and history live outside the app.
                 boolean open = Ask.confirm(frame, "Version " + available.latest() + " is out",
                         "You have " + available.installed() + ". The download page opens in "
-                                + "your browser. After replacing the app, grant Input Monitoring "
-                                + "and Accessibility to the new one again.",
+                                + "your browser. Drag the new Viskly over this one: the model, "
+                                + "your settings, the history and the permissions all stay.",
                         "Open the download page", false);
                 if (open) {
                     open(available.page());
@@ -497,19 +496,21 @@ public class SettingsWindow {
         microphoneCard = new PermissionCard("Microphone",
                 "Recording. The system asks for this one by itself.",
                 () -> openPane("Privacy_Microphone"));
-        inputMonitoringCard = new PermissionCard("Input Monitoring",
-                "Receiving the shortcut. Without it the key does nothing, silently.",
-                () -> openPane("Privacy_ListenEvent"));
         accessibilityCard = new PermissionCard("Accessibility",
-                "Pasting the text. Without it the transcript stays in the clipboard.",
-                () -> openPane("Privacy_Accessibility"));
+                "Pasting the text, and Escape to cancel. Without it the transcript stays in "
+                        + "the clipboard.",
+                () -> {
+                    // The system prompt is Apple's way of putting Viskly on the list, so
+                    // there is a switch to flip when the pane opens.
+                    injector.askToPaste();
+                    openPane("Privacy_Accessibility");
+                });
 
         permissionsPane.row(microphoneCard, 0);
-        permissionsPane.row(inputMonitoringCard, 10);
         permissionsPane.row(accessibilityCard, 10);
-        permissionsPane.row(new Hint("After granting a consent, quit Viskly and start it "
-                + "again. macOS hands permissions to a process when it launches, never to "
-                + "one already running."), 24);
+        permissionsPane.row(new Hint("The shortcut itself needs no permission: Viskly sees only "
+                + "that a modifier key went down or up. Accessibility works as soon as the "
+                + "switch is on, with no restart."), 24);
         permissionsPane.row(Box.createVerticalGlue(), 0);
         return permissionsPane;
     }
@@ -523,11 +524,10 @@ public class SettingsWindow {
         // line rather than reporting a denial, so the capture opening at startup is the
         // only evidence available here.
         microphoneCard.granted(true);
-        inputMonitoringCard.granted(hotkey.isActive());
         accessibilityCard.granted(injector.canPaste());
 
-        boolean all = hotkey.isActive() && injector.canPaste();
-        permissionsPane.heading(all ? "All three granted" : "Something is missing",
+        boolean all = injector.canPaste();
+        permissionsPane.heading(all ? "Both granted" : "Something is missing",
                 all ? Ink.OK : Ink.ACCENT);
     }
 
@@ -543,6 +543,7 @@ public class SettingsWindow {
         modelPane.heading(
                 ready ? "Ready" : present ? "On disk, but it did not load" : "Not installed yet",
                 ready ? Ink.OK : Ink.ACCENT);
+        modelCard.path(models.path());
         modelCard.installed(present);
         downloadButton.setVisible(!present);
         chooseButton.setVisible(!present);
@@ -557,7 +558,7 @@ public class SettingsWindow {
         if (!ready) {
             sidebar.status("Off until the model loads", Ink.ACCENT);
         } else if (!hotkey.isActive()) {
-            sidebar.status("Off: no Input Monitoring", Ink.ACCENT);
+            sidebar.status("Off: the shortcut is not installed", Ink.ACCENT);
         } else {
             sidebar.status("Listening on " + key.shortLabel(), Ink.OK);
         }
@@ -587,8 +588,17 @@ public class SettingsWindow {
         return label;
     }
 
+    /**
+     * Through /usr/bin/open, not Desktop.browse: browse hands every URI to the default web
+     * browser, which then asks whether to open System Settings before doing it.
+     */
     private void openPane(String pane) {
-        open(URI.create("x-apple.systempreferences:com.apple.preference.security?" + pane));
+        String uri = "x-apple.systempreferences:com.apple.preference.security?" + pane;
+        try {
+            new ProcessBuilder("/usr/bin/open", uri).start();
+        } catch (IOException e) {
+            log.warn("Could not open {}", uri, e);
+        }
     }
 
     private void open(URI uri) {
@@ -627,7 +637,7 @@ public class SettingsWindow {
 
         static final int H = 170;
 
-        private final transient Path path;
+        private transient Path path;
         private final transient ThinProgress progress = new ThinProgress();
 
         private String left = "";
@@ -647,6 +657,12 @@ public class SettingsWindow {
         void status(String left, String right) {
             this.left = left;
             this.right = right;
+            repaint();
+        }
+
+        /** Changes when a model is chosen from disk, which keeps its own file name. */
+        void path(Path value) {
+            this.path = value;
             repaint();
         }
 
@@ -670,7 +686,7 @@ public class SettingsWindow {
             Graphics2D g2 = Draw.smooth((Graphics2D) g.create());
             int w = getWidth();
 
-            Draw.text(g2, "large-v3-turbo, quantised. Runs entirely on this machine.",
+            Draw.text(g2, Draw.fit(g2, describe(path), Ink.body(13), w - 48),
                     Ink.body(13), Ink.MUTED, 24, 40);
             Draw.text(g2, Draw.fit(g2, home(path), Ink.mono(11), w - 48),
                     Ink.mono(11), Ink.FAINT, 24, 64);
@@ -686,6 +702,19 @@ public class SettingsWindow {
                 }
             }
             g2.dispose();
+        }
+
+        /**
+         * The model the download fetches has a sentence of its own. Anything chosen from
+         * disk is named by its file, the only thing known about it for certain.
+         */
+        private static String describe(Path path) {
+            String name = path.getFileName().toString();
+            if (name.equals(ModelStore.FILE)) {
+                return "large-v3-turbo, quantised. Runs entirely on this machine.";
+            }
+            return name.replaceFirst("^ggml-", "").replaceFirst("\\.bin$", "")
+                    + ", chosen from disk. Runs entirely on this machine.";
         }
 
         /** An absolute path to a home directory is noise; the tilde is what people read. */

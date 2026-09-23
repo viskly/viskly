@@ -24,7 +24,7 @@ public class HotkeyConfiguration {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("mac")) {
             ModifierKey key = ModifierKey.valueOf(props.hotkey().key());
-            return new MacHotkeyListener(key);
+            return new MacModifierMonitor(key);
         }
         log.warn("No shortcut adapter for {} yet — falling back to console mode", os);
         return new ConsoleHotkeyListener();

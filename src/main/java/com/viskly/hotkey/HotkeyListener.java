@@ -17,9 +17,8 @@ public interface HotkeyListener extends AutoCloseable {
     void setKey(String name);
 
     /**
-     * Whether the shortcut is actually being received. On macOS this is false when the
-     * system refused the event tap, which is the only visible symptom of a missing
-     * Input Monitoring consent.
+     * Whether the shortcut is actually being received. On macOS it needs no consent, so
+     * false means AppKit refused the monitor, and the log says why.
      */
     boolean isActive();
 

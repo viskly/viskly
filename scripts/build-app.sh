@@ -23,8 +23,7 @@
 #                          Anything meant for other Macs needs one whose libraries link
 #                          nothing outside itself, such as Temurin; Homebrew's does not.
 #
-# IMPORTANT about permissions: macOS ties the Accessibility and Input Monitoring consents
-# to the signature. Ad-hoc, that is the hash of this exact build, so EVERY rebuild looks
+# IMPORTANT about permissions: macOS ties the Accessibility consent to the signature. Ad-hoc, that is the hash of this exact build, so EVERY rebuild looks
 # like a new application and wipes them. With a Developer ID it is the team, and they
 # survive updates.
 
@@ -260,8 +259,8 @@ MODULES="$("${JAVA}" --list-modules | cut -d'@' -f1 | grep -vE '^jdk\.(jlink|jpa
 # The JVM options, since a comment cannot sit inside the command below:
 #   whisperjni.libdir, org.sqlite.lib.*: load the natives from the bundle (see above).
 #   DisableAttachMechanism, -EnableDynamicAgentLoading: a process of the same user could
-#     otherwise attach to this JVM and run code with its Input Monitoring, Accessibility
-#     and microphone consents. It also means jcmd and jstack cannot reach a packaged build;
+#     otherwise attach to this JVM and run code with its Accessibility and microphone
+#     consents. It also means jcmd and jstack cannot reach a packaged build;
 #     debug with mvn spring-boot:run.
 # $APPDIR stays literal here: the launcher expands it to Contents/app at every start.
 # shellcheck disable=SC2016
@@ -410,8 +409,21 @@ if [[ "${DMG}" == true ]]; then
   ditto "${BUNDLE}" "${DMG_STAGE}/${APP}.app"
   # The layout people expect from a Mac download: the app beside a link to drag it onto.
   ln -s /Applications "${DMG_STAGE}/Applications"
-  hdiutil create -volname "${APP}" -srcfolder "${DMG_STAGE}" -ov -format UDZO \
-    "${DMG_PATH}" >/dev/null
+  # hdiutil create now and then fails with "Resource busy" on GitHub's macOS runners, after
+  # a build that was otherwise fine (it did on macos-15-intel in PR #3). Nothing in the
+  # staged folder is wrong, and a release should not fail on it, so it gets a few tries.
+  for attempt in 1 2 3 4; do
+    if hdiutil create -volname "${APP}" -srcfolder "${DMG_STAGE}" -ov -format UDZO \
+      "${DMG_PATH}" >/dev/null; then
+      break
+    fi
+    if [[ "${attempt}" -eq 4 ]]; then
+      echo "hdiutil create failed four times."
+      exit 1
+    fi
+    echo "    hdiutil create failed, trying again (${attempt} of 3)"
+    sleep $((attempt * 5))
+  done
   if [[ "${IDENTITY}" != "-" ]]; then
     codesign --force --timestamp --sign "${IDENTITY}" "${DMG_PATH}"
   fi
@@ -493,14 +505,9 @@ cat <<INFO
 Done: ${BUNDLE}${DMG_PATH:+
 Disk image: ${DMG_PATH}}${GATEKEEPER}
 
-On first launch macOS will ask about the microphone. The other two consents you have to
-grant by hand, in Settings > Privacy & Security:
-
-  Input Monitoring   -> ${APP}    (listening for the shortcut)
-  Accessibility      -> ${APP}    (pasting text)
-
-After ticking them, quit the application and start it again — macOS reads permissions
-when the process starts.
+On first launch macOS will ask about the microphone. Accessibility, for pasting text and
+for Escape, is granted from Viskly's settings: Permissions, then Open. The shortcut needs
+no permission, and nothing needs a restart.
 
 The model (574 MB) is not part of the package. If you do not have it yet:
   ./scripts/get-model.sh

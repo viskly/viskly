@@ -39,8 +39,8 @@ mvn spring-boot:run                 # run it from the terminal
 ./scripts/build-app.sh --install    # build Viskly.app into /Applications
 ```
 
-Every build of the app is a new application to macOS, so its Input Monitoring and
-Accessibility consents have to be granted again. While iterating, `mvn spring-boot:run`
+Every build of the app is a new application to macOS, so its Accessibility consent has
+to be granted again. While iterating, `mvn spring-boot:run`
 with the consents given to your terminal saves a lot of that.
 
 [DEVELOPMENT.md](DEVELOPMENT.md) has the architecture, the conventions and the list of
